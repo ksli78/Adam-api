@@ -13,12 +13,31 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
-import faiss  # type: ignore
 import numpy as np
+
+_NUMPY_VERSION = np.__version__
+_MATCH = re.match(r"(\d+)\.(\d+)", _NUMPY_VERSION)
+if _MATCH and int(_MATCH.group(1)) >= 2:
+    raise RuntimeError(
+        "Faiss Python bindings bundled with this project require NumPy < 2. "
+        f"Detected numpy=={_NUMPY_VERSION}. "
+        "Please reinstall with \"pip install 'numpy<2 faiss-cpu==1.8.0.post1'\" "
+        "or use the provided requirements.txt."
+    )
+
+try:
+    import faiss  # type: ignore
+except (ImportError, AttributeError) as exc:  # pragma: no cover - import guard
+    raise ImportError(
+        "Failed to import faiss. Ensure numpy<2 and faiss-cpu==1.8.0.post1 "
+        "(see requirements.txt/Dockerfile) before running the API."
+    ) from exc
+
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
