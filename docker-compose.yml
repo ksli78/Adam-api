@@ -1,0 +1,27 @@
+services:
+  ollama:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: ollama
+      args:
+        OLLAMA_MODEL: granite4:latest
+    container_name: adam_ollama
+    ports:
+      - "11434:11434"
+    gpus: all
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    container_name: adam_api
+    ports:
+      - "8000:8000"
+    environment:
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HOME: /opt/hf
+    depends_on:
+      - ollama
+    gpus: all

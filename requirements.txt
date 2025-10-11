@@ -1,0 +1,28 @@
+# --- pinned to avoid NumPy 2 ABI breakage with faiss ---
+numpy==1.26.4
+faiss-cpu==1.8.0  # wheels built against numpy<2
+# --- end pins ---
+
+# ADAM RAG dependencies
+#
+# This requirements file lists the third‑party Python packages needed to
+# run the ADAM (Amentum Document Assistance Model) RAG system.  It
+# includes web serving (FastAPI + Uvicorn), document conversion (Docling),
+# vector search (Faiss), embeddings and reranking (SentenceTransformers),
+# generative models (Transformers + Torch), and basic scientific
+# computing (NumPy, scikit‑learn).  Pin versions as appropriate for your
+# environment; the versions below mirror those used in the provided
+# Dockerfile for reproducible builds.
+#numpy>=1.26.4
+#faiss-cpu==1.8.0.post5
+fastapi==0.110.1
+uvicorn[standard]==0.27.1
+pydantic
+scikit-learn==1.5.0
+sentence-transformers==2.6.1
+transformers==4.40.2
+docling>=2.8,<3
+
+
+# Optional dependency: accelerate inference with quantisation or LoRA
+#accelerate==0.26.1
