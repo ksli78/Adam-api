@@ -58,7 +58,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 import config
 from ingestion.chunker import Chunk
-from ingestion.embedder import embed_texts
+from ingestion.embedder import EMBEDDINGS_AVAILABLE, EMBEDDINGS_IMPORT_ERROR, embed_texts
 
 
 @dataclass
@@ -94,12 +94,17 @@ class HybridIndex:
             except Exception as exc:
                 logger.error("Failed to load existing index: %s", exc)
                 # Fall back to new empty index
-        if _FAISS_AVAILABLE and self.faiss_index is None:
+        if _FAISS_AVAILABLE and EMBEDDINGS_AVAILABLE and self.faiss_index is None:
             # Create a new index for inner product similarity (cosine after normalisation)
             self.faiss_index = faiss.IndexFlatIP(self.dimension)
         if not _FAISS_AVAILABLE:
             logger.warning(
                 "FAISS features disabled; dense retrieval will fall back to lexical-only searches."
+            )
+        if _FAISS_AVAILABLE and not EMBEDDINGS_AVAILABLE:
+            logger.warning(
+                "Dense retrieval disabled because SentenceTransformer could not be imported%s.",
+                f": {EMBEDDINGS_IMPORT_ERROR}" if EMBEDDINGS_IMPORT_ERROR else "",
             )
 
     def _save(self) -> None:
@@ -183,7 +188,7 @@ class HybridIndex:
         if not new_chunks:
             return
         # Compute embeddings for new chunks when dense retrieval is available
-        if _FAISS_AVAILABLE:
+        if _FAISS_AVAILABLE and EMBEDDINGS_AVAILABLE:
             texts = [c.text for c in new_chunks]
             vectors = embed_texts(texts)
             # Normalise vectors to unit length for cosine similarity
@@ -194,7 +199,12 @@ class HybridIndex:
                 self.faiss_index = faiss.IndexFlatIP(self.dimension)
             self.faiss_index.add(matrix)
         else:
-            logger.debug("Skipping dense embedding generation because FAISS is unavailable.")
+            if not _FAISS_AVAILABLE:
+                logger.debug("Skipping dense embedding generation because FAISS is unavailable.")
+            elif not EMBEDDINGS_AVAILABLE:
+                logger.debug(
+                    "Skipping dense embedding generation because SentenceTransformer dependencies are unavailable."
+                )
         # Append new chunks to metadata list
         self.chunks.extend(new_chunks)
         # Rebuild TF‑IDF index from scratch (small overhead compared to ingesting all docs)
@@ -227,7 +237,13 @@ class HybridIndex:
             return []
         dense_indices: np.ndarray = np.array([], dtype=int)
         dense_scores: np.ndarray = np.array([], dtype=float)
-        dense_weight = alpha if (_FAISS_AVAILABLE and self.faiss_index is not None and self.faiss_index.ntotal > 0) else 0.0
+        dense_ready = (
+            _FAISS_AVAILABLE
+            and EMBEDDINGS_AVAILABLE
+            and self.faiss_index is not None
+            and self.faiss_index.ntotal > 0
+        )
+        dense_weight = alpha if dense_ready else 0.0
         if dense_weight > 0:
             # Compute dense embedding for query
             query_vec = embed_texts([query])[0]
