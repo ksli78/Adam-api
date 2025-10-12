@@ -12,31 +12,46 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
 
+logger = logging.getLogger(__name__)
+
 _NUMPY_VERSION = np.__version__
 _MATCH = re.match(r"(\d+)\.(\d+)", _NUMPY_VERSION)
+_FAISS_AVAILABLE = True
+_FAISS_IMPORT_ERROR: Optional[str] = None
+
 if _MATCH and int(_MATCH.group(1)) >= 2:
-    raise RuntimeError(
+    _FAISS_AVAILABLE = False
+    _FAISS_IMPORT_ERROR = (
         "Faiss Python bindings bundled with this project require NumPy < 2. "
         f"Detected numpy=={_NUMPY_VERSION}. "
         "Please reinstall with \"pip install 'numpy<2 faiss-cpu==1.8.0.post1'\" "
         "or use the provided requirements.txt."
     )
 
-try:
-    import faiss  # type: ignore
-except (ImportError, AttributeError) as exc:  # pragma: no cover - import guard
-    raise ImportError(
-        "Failed to import faiss. Ensure numpy<2 and faiss-cpu==1.8.0.post1 "
-        "(see requirements.txt/Dockerfile) before running the API."
-    ) from exc
+if _FAISS_AVAILABLE:
+    try:
+        import faiss  # type: ignore
+    except (ImportError, AttributeError) as exc:  # pragma: no cover - import guard
+        _FAISS_AVAILABLE = False
+        _FAISS_IMPORT_ERROR = (
+            "Failed to import faiss. Ensure numpy<2 and faiss-cpu==1.8.0.post1 "
+            "(see requirements.txt/Dockerfile)."
+        )
+        logger.warning("FAISS unavailable: %s", exc)
+else:  # pragma: no cover - defensive branch
+    faiss = None  # type: ignore
+
+if not _FAISS_AVAILABLE and _FAISS_IMPORT_ERROR:
+    logger.warning("FAISS disabled: %s", _FAISS_IMPORT_ERROR)
+
+if TYPE_CHECKING:  # pragma: no cover - type checking aid
+    import faiss  # type: ignore  # noqa: F401
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -44,8 +59,6 @@ from sklearn.metrics.pairwise import cosine_similarity
 import config
 from ingestion.chunker import Chunk
 from ingestion.embedder import embed_texts
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -67,7 +80,7 @@ class HybridIndex:
     def __init__(self, *, dimension: int = 768) -> None:
         self.dimension = dimension
         # Dense index
-        self.faiss_index: Optional[faiss.IndexFlatIP] = None
+        self.faiss_index: Optional["faiss.IndexFlatIP"] = None
         # Lexical index
         self.tfidf_vectorizer: Optional[TfidfVectorizer] = None
         self.tfidf_matrix: Optional[np.ndarray] = None
@@ -81,15 +94,19 @@ class HybridIndex:
             except Exception as exc:
                 logger.error("Failed to load existing index: %s", exc)
                 # Fall back to new empty index
-        if self.faiss_index is None:
+        if _FAISS_AVAILABLE and self.faiss_index is None:
             # Create a new index for inner product similarity (cosine after normalisation)
             self.faiss_index = faiss.IndexFlatIP(self.dimension)
+        if not _FAISS_AVAILABLE:
+            logger.warning(
+                "FAISS features disabled; dense retrieval will fall back to lexical-only searches."
+            )
 
     def _save(self) -> None:
         """Persist the index and metadata to disk."""
-        assert self.faiss_index is not None
-        # Save FAISS index
-        faiss.write_index(self.faiss_index, str(config.FAISS_INDEX_PATH))
+        if _FAISS_AVAILABLE and self.faiss_index is not None:
+            # Save FAISS index
+            faiss.write_index(self.faiss_index, str(config.FAISS_INDEX_PATH))
         # Save TF‑IDF matrix and vectorizer
         with open(config.TFIDF_INDEX_PATH, "wb") as f:
             np.savez(f, data=self.tfidf_matrix)
@@ -108,8 +125,11 @@ class HybridIndex:
 
     def _load(self) -> None:
         """Load the index and metadata from disk."""
-        # Load FAISS index
-        self.faiss_index = faiss.read_index(str(config.FAISS_INDEX_PATH))
+        # Load FAISS index if available
+        if _FAISS_AVAILABLE:
+            self.faiss_index = faiss.read_index(str(config.FAISS_INDEX_PATH))
+        else:
+            logger.debug("Skipping FAISS index load because FAISS is unavailable.")
         # Load TF‑IDF matrix
         with np.load(config.TFIDF_INDEX_PATH, allow_pickle=True) as data:
             self.tfidf_matrix = data["data"]
@@ -162,16 +182,19 @@ class HybridIndex:
         new_chunks = list(chunks)
         if not new_chunks:
             return
-        # Compute embeddings for new chunks
-        texts = [c.text for c in new_chunks]
-        vectors = embed_texts(texts)
-        # Normalise vectors to unit length for cosine similarity
-        vectors = [v / np.linalg.norm(v) if np.linalg.norm(v) > 0 else v for v in vectors]
-        matrix = np.vstack(vectors).astype("float32")
-        # Add to FAISS index
-        if self.faiss_index is None:
-            self.faiss_index = faiss.IndexFlatIP(self.dimension)
-        self.faiss_index.add(matrix)
+        # Compute embeddings for new chunks when dense retrieval is available
+        if _FAISS_AVAILABLE:
+            texts = [c.text for c in new_chunks]
+            vectors = embed_texts(texts)
+            # Normalise vectors to unit length for cosine similarity
+            vectors = [v / np.linalg.norm(v) if np.linalg.norm(v) > 0 else v for v in vectors]
+            matrix = np.vstack(vectors).astype("float32")
+            # Add to FAISS index
+            if self.faiss_index is None:
+                self.faiss_index = faiss.IndexFlatIP(self.dimension)
+            self.faiss_index.add(matrix)
+        else:
+            logger.debug("Skipping dense embedding generation because FAISS is unavailable.")
         # Append new chunks to metadata list
         self.chunks.extend(new_chunks)
         # Rebuild TF‑IDF index from scratch (small overhead compared to ingesting all docs)
@@ -202,14 +225,19 @@ class HybridIndex:
         """
         if not self.chunks:
             return []
-        # Compute dense embedding for query
-        query_vec = embed_texts([query])[0]
-        query_vec = query_vec / np.linalg.norm(query_vec) if np.linalg.norm(query_vec) > 0 else query_vec
-        # Dense search
-        assert self.faiss_index is not None
-        D, I = self.faiss_index.search(np.array([query_vec], dtype="float32"), top_k)
-        dense_scores = D[0]
-        dense_indices = I[0]
+        dense_indices: np.ndarray = np.array([], dtype=int)
+        dense_scores: np.ndarray = np.array([], dtype=float)
+        dense_weight = alpha if (_FAISS_AVAILABLE and self.faiss_index is not None and self.faiss_index.ntotal > 0) else 0.0
+        if dense_weight > 0:
+            # Compute dense embedding for query
+            query_vec = embed_texts([query])[0]
+            query_norm = np.linalg.norm(query_vec)
+            if query_norm > 0:
+                query_vec = query_vec / query_norm
+            # Dense search
+            D, I = self.faiss_index.search(np.array([query_vec], dtype="float32"), top_k)
+            dense_scores = D[0]
+            dense_indices = I[0]
         # Lexical search
         lexical_scores = None
         lexical_indices = None
@@ -225,11 +253,15 @@ class HybridIndex:
         combined: Dict[int, float] = {}
         # Add dense scores
         for idx, score in zip(dense_indices, dense_scores):
-            combined[idx] = combined.get(idx, 0.0) + float(alpha * score)
+            combined[idx] = combined.get(idx, 0.0) + float(dense_weight * score)
         # Add lexical scores
+        lexical_weight = 1.0 - dense_weight
         if lexical_indices is not None and lexical_scores is not None:
             for idx, score in zip(lexical_indices, lexical_scores):
-                combined[idx] = combined.get(idx, 0.0) + float((1 - alpha) * score)
+                combined[idx] = combined.get(idx, 0.0) + float(lexical_weight * score)
+        if not combined and lexical_indices is not None and lexical_scores is not None:
+            # Dense retrieval unavailable; return lexical results directly
+            return list(zip(lexical_indices.tolist(), lexical_scores.tolist()))[:top_k]
         # Sort combined scores
         ranked = sorted(combined.items(), key=lambda x: x[1], reverse=True)
         return ranked[:top_k]
