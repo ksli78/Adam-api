@@ -6,7 +6,9 @@ Run: uvicorn api.main:app --host 0.0.0.0 --port 8000
 """
 
 from __future__ import annotations
-
+import os
+import glob
+import math
 import logging
 import uuid
 from pathlib import Path
@@ -123,10 +125,20 @@ async def query(req: QueryRequest) -> QueryResponse:
 
     citations_out: List[Citation] = []
     for c in cites:
+        raw_score = c.get("score", 0.0)
+        try:
+            score_val = float(raw_score)
+        except Exception: 
+            score_val = 0.0 
+
+        if not math.isfinite(score_val):
+            logging.warning(f"Invalid score {raw_score} for id ={c.get('id')}, replaceing with 0.0")
+            score_val = 0.0 
+
         citations_out.append(
             Citation(
                 id=c.get("id", ""),
-                score=float(c.get("score", 0.0)),
+                score=score_val,
                 excerpt=c.get("excerpt", "")[:500],
                 section=c.get("section"),
                 heading=c.get("heading"),
@@ -158,3 +170,45 @@ async def search_endpoint(query: str, top_k: Optional[int] = None):
             for res in results
         ]
     )
+
+@app.post("/admin/clear-index", tags=["admin"])
+async def clear_index():
+    """
+    Completely clear all local retrieval indexes (FAISS + TF-IDF) and metadata.
+    Use this only if you want to rebuild from scratch.
+    """
+    deleted_files = []
+
+    try:
+        # List of possible index paths from config
+        index_paths = []
+        if hasattr(config, "FAISS_INDEX_PATH"):
+            index_paths.append(config.FAISS_INDEX_PATH)
+        if hasattr(config, "TFIDF_INDEX_PATH"):
+            index_paths.append(config.TFIDF_INDEX_PATH)
+
+        # Expand to include .meta.json, .json variants
+        all_files = []
+        for path in index_paths:
+            base = os.path.splitext(path)[0]
+            all_files += glob.glob(f"{base}*")
+
+        for f in all_files:
+            if os.path.exists(f):
+                os.remove(f)
+                deleted_files.append(os.path.basename(f))
+
+        # Log what was deleted
+        if deleted_files:
+            logger.info("Cleared index files: %s", deleted_files)
+        else:
+            logger.info("No index files found to delete.")
+
+        return {
+            "message": "Index cleared successfully.",
+            "deleted_files": deleted_files,
+        }
+
+    except Exception as e:
+        logger.exception("Failed to clear index: %s", e)
+        raise HTTPException(status_code=500, detail=f"Error clearing index: {e}")
