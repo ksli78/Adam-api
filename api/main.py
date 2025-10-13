@@ -163,7 +163,7 @@ async def _startup() -> None:
         logger.warning("Failed to ensure directories: %s", e)
     # Warm index lazily
     try:
-        _ = _get_index()
+        _ = index
     except Exception as e:
         logger.warning("Index not ready on startup: %s", e)
     # Warm answer models if available
@@ -209,6 +209,8 @@ async def clear_index():
                 except FileNotFoundError:
                     pass
         # Reinitialise index
+        global index
+        index = HybridIndex() 
         # Remove any in‑memory index; new calls to _get_index() will rebuild
         # automatically
         return {"message": "Index cleared successfully.", "deleted_files": deleted}
@@ -311,7 +313,6 @@ async def list_documents():
     containing the document ID and the count of chunks.
     """
     try:
-        index: HybridIndex = _get_index()
         counts: Dict[str, int] = {}
         for chunk in getattr(index, "chunks", []):
             doc_id = getattr(chunk, "document_id", None)
@@ -338,7 +339,6 @@ async def get_document_chunks(document_id: str):
     If the document is not found in the index, a 404 error is raised.
     """
     try:
-        index: HybridIndex = _get_index()
         # Collect matching chunks
         matching: List[ChunkDetail] = []
         for chunk in getattr(index, "chunks", []):
