@@ -116,7 +116,7 @@ def _select_sentences_overlap_then_semantic_mmr(
     results: Sequence[RetrievalResult],
     max_sentences: int = 5,
     df_uninformative_ratio: float = 0.30,   # tokens in >30% of sentences are uninformative (local)
-    q_ngram_thresh: float = 0.40,           # fuzzy 3-gram Jaccard threshold for overlap
+    q_ngram_thresh: float = 0.30,           # fuzzy 3-gram Jaccard threshold for overlap
     min_sem_floor: float = 0.30,            # absolute semantic floor
     top_rel_ratio: float = 0.80,            # keep >= 80% of best semantic sim
     lambda_diversity: float = 0.7,          # MMR tradeoff
@@ -221,8 +221,8 @@ def _select_sentences_overlap_then_semantic_mmr(
     out: List[Dict] = []
     for idx in selected:
         sent, cid, md = kept_candidates[idx]
-        if cid in seen:
-            continue
+        # if cid in seen:
+        #     continue
         seen.add(cid)
         out.append({"sentence": sent, "score": float(ce_scores[idx]), "chunk_id": cid, "metadata": md})
         if len(out) >= max_sentences:
@@ -277,7 +277,7 @@ def answer_question(question: str, results: List[RetrievalResult]) -> Tuple[str,
     if not results:
         return ("Not found in the indexed documents.", [])
 
-    top, had_overlap_pool = _select_sentences_overlap_then_semantic_mmr(question, results, max_sentences=5)
+    top, had_overlap_pool = _select_sentences_overlap_then_semantic_mmr(question, results, max_sentences=20)
     if not top:
         return ("Not found in the indexed documents.", [])
 
@@ -321,13 +321,20 @@ def answer_question(question: str, results: List[RetrievalResult]) -> Tuple[str,
             "Please review the cited policy for details."
         )
     else:
+        # system = (
+        #     "You are a precise assistant. Answer ONLY using the provided evidence. "
+        #     "Use the policy text verbatim where possible. "
+        #     "Focus strictly on the question’s topic; do not add unrelated information. "
+        #     "Include any specific identifiers (e.g., form numbers). "
+        #     "Write 1–3 concise sentences."
+        # )
+        
         system = (
-            "You are a precise assistant. Answer ONLY using the provided evidence. "
-            "Use the policy text verbatim where possible. "
-            "Focus strictly on the question’s topic; do not add unrelated information. "
-            "Include any specific identifiers (e.g., form numbers). "
-            "Write 1–3 concise sentences."
+            "You are a policy assistant.  Answer the user’s question using only the provided evidence. "
+            "When the policy mentions a form or document, include its exact name in your answer. "
+            "List each step in order and do not invent any details that are not explicitly in the evidence."
         )
+
         user = "Question: " + question + "\n\nEvidence:\n" + "\n".join(evidence_lines) + "\n\nAnswer:"
         ans = _ollama_generate(system, user, max_tokens=200) or " ".join(d["sentence"] for d in top[:3])
 
@@ -350,7 +357,7 @@ def answer_question(question: str, results: List[RetrievalResult]) -> Tuple[str,
 
 def generate_summary(text: str) -> str:
     system = (
-        "You summarize text into 1–2 concise sentences. "
+        "You summarise into a concise paragraph including all key steps and conditions. "
         "No fluff, only key facts. "
         "Write as a standalone statement."
     )
