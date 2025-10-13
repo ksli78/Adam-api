@@ -22,6 +22,10 @@ services:
     environment:
       TRANSFORMERS_OFFLINE: "1"
       HF_HOME: /opt/hf
+    volumes:
+      - hf_cache:/opt/hf
     depends_on:
       - ollama
     gpus: all
+volumes:
+  hf_cache:

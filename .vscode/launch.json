@@ -1,0 +1,26 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "API (Uvicorn, reload)",
+      "type": "python",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": [
+        "api.main:app",
+        "--host", "127.0.0.1",
+        "--port", "8000",
+        "--reload"
+      ],
+      "envFile": "${workspaceFolder}/.env",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "HF_HUB_DISABLE_SYMLINKS": "1",
+        "HF_HUB_DISABLE_SYMLINKS_WARNING": "1",
+        "HF_HOME": "${workspaceFolder}\\.hf"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    }
+  ]
+}

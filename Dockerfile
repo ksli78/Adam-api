@@ -29,7 +29,7 @@ RUN pip install --upgrade pip setuptools wheel && \
     pip install -r /tmp/requirements.txt && \
     # SAFETY: re-pin numpy/faiss ABI-compatible
     pip install --no-deps --upgrade numpy==1.26.4 faiss-cpu==1.8.0 && \
-
+    # ---- GPU Torch stack (CUDA 12.1) ----
     pip install --index-url https://download.pytorch.org/whl/cu121 \
         --force-reinstall torch==2.4.0+cu121 torchvision==0.19.0+cu121 torchaudio==2.4.0+cu121 && \
     pip install faiss-cpu==1.8.0.post1 && \
@@ -39,8 +39,9 @@ RUN pip install --upgrade pip setuptools wheel && \
         tokenizers==0.20.1 \
         huggingface_hub==0.25.2 \
         safetensors>=0.4.4 \
-        pillow>=10.4.0
-
+        pillow>=10.4.0 && \
+    # ---- ADD THIS: Docling with VLM extras ----
+    pip install --no-cache-dir "docling[vlm]"
 
 
 # Avoid torchvision import during build-time caching
@@ -66,6 +67,20 @@ for repo in repos:
     )
 print("Public Granite repos cached successfully.")
 PY
+
+# Pre-download Docling's default VLM (SmolDocling, Transformers backend)
+RUN python - <<'PY'
+from huggingface_hub import snapshot_download
+snapshot_download(
+    repo_id="ds4sd/SmolDocling-256M-preview",
+    local_dir=None,              # goes to HF cache (HF_HOME=/opt/hf)
+    local_dir_use_symlinks=False,
+    resume_download=True,
+    max_workers=8
+)
+print("SmolDocling cached successfully.")
+PY
+
 ENV PYTHONPATH=/app
 # Copy app
 WORKDIR /app

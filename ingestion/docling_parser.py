@@ -1,115 +1,67 @@
-"""
-PDF parsing utilities using Docling.
-
-This module wraps the Docling library to convert PDF documents into a
-structured, layout‑preserving markdown format.  By default we use
-IBM’s Granite‑Docling model to extract tables, formulas and visual
-hierarchies accurately【583088636613067†L68-L99】.  Should you wish to use a
-different model or pipeline, adjust the ``model_spec`` argument when
-constructing the converter.
-
-If ``PDF_CACHE_DIR`` is configured in :mod:`adam_rag.config`, this module
-caches downloaded or uploaded PDF files to that directory so that
-conversion can be repeated without redownloading.
-"""
-
+# ingestion/docling_parser.py
 from __future__ import annotations
 
+import os
 import logging
-import shutil
 from pathlib import Path
-from typing import Optional
 
-from . import text_cleaner  # imported for side effects (ensures config loaded)
-from config import PDF_CACHE_DIR
+log = logging.getLogger(__name__)
 
-logger = logging.getLogger(__name__)
+# Windows-safe HF cache defaults (symlink-free)
+os.environ.setdefault("HF_HOME", str(Path(".hf").resolve()))
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
-
-def _ensure_pdf_cache_dir() -> None:
-    """Ensure the PDF cache directory exists if configured."""
-    if PDF_CACHE_DIR is not None:
-        PDF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def convert_pdf_to_markdown(source: str | Path, *, cache: bool = True) -> str:
-    """Convert a PDF document into markdown using Docling.
-
-    Parameters
-    ----------
-    source:
-        Either a file path to a local PDF or a URL pointing at a remote
-        resource (e.g. SharePoint).  Docling accepts both local paths and
-        remote URLs.
-    cache:
-        If ``True`` and :data:`PDF_CACHE_DIR` is configured, a copy of the
-        original PDF will be stored in that directory using the file name
-        portion of ``source``.  This can speed up subsequent ingestions of
-        the same file.
-
-    Returns
-    -------
-    str
-        The extracted markdown representation of the document.
-
-    Notes
-    -----
-    Docling automatically downloads the required model weights (e.g. Granite
-    Docling) on first use.  To run in an air‑gapped environment, you must
-    pre‑download those weights in your development environment and bake
-    them into your Docker image.
+def convert_pdf_to_markdown(source: str | Path) -> str:
     """
-    try:
-        from docling.datamodel import vlm_model_specs
-        from docling.datamodel.base_models import InputFormat
-        from docling.datamodel.pipeline_options import VlmPipelineOptions
-        from docling.document_converter import DocumentConverter, PdfFormatOption
-        from docling.pipeline.vlm_pipeline import VlmPipeline
-    except ImportError as exc:
-        raise ImportError(
-            "Docling is not installed. Please install docling with\n"
-            "  pip install 'docling[vllm]'\n"
-            "and ensure you have sufficient GPU/CPU resources."
-        ) from exc
+    Convert a PDF to Markdown using Docling.
+    Defaults to the standard pipeline (fast for native PDFs).
+    Use VLM only if DOCLING_USE_VLM=1 is set in env.
+    """
+    from docling.document_converter import DocumentConverter
 
-    # If the source is a remote URL and caching is enabled, download to cache
-    # directory before passing to Docling.  Docling can read remote URLs
-    # directly, but caching simplifies offline reuse and ensures reproducible
-    # filenames for deduplication.
-    src_str = str(source)
-    local_path: str | Path = source
-    if cache and PDF_CACHE_DIR is not None:
-        _ensure_pdf_cache_dir()
-        filename = Path(src_str).name
-        cached_path = PDF_CACHE_DIR / filename
-        # Only copy if the file does not already exist
-        if isinstance(source, (str, Path)) and Path(source).is_file():
-            # Local file provided; copy it into cache
-            if not cached_path.exists():
-                shutil.copy2(source, cached_path)
-            local_path = cached_path
-        elif src_str.lower().startswith(("http://", "https://")):
-            # Remote file; rely on Docling's internal download but we still
-            # instruct it to save the file locally by specifying the cache path
-            local_path = src_str  # remote URL; Docling will fetch
+    use_vlm = os.getenv("DOCLING_USE_VLM", "0") == "1"
+
+    if use_vlm:
+        try:
+            from docling.datamodel import vlm_model_specs
+            from docling.datamodel.base_models import InputFormat
+            from docling.datamodel.pipeline_options import VlmPipelineOptions
+            from docling.document_converter import PdfFormatOption
+            from docling.pipeline.vlm_pipeline import VlmPipeline
+
+            # Try a few well-known specs (version-safe)
+            candidates = [
+                "GRANITEDOCLING_TRANSFORMERS",
+                "SMOLDOCLING_TRANSFORMERS",
+                "SMOLDOCLING_ONNX",
+            ]
+            selected = None
+            for name in candidates:
+                if hasattr(vlm_model_specs, name):
+                    selected = getattr(vlm_model_specs, name)
+                    break
+
+            if selected is not None:
+                log.info("Using Docling VLM spec: %s", name)
+                pipeline_options = VlmPipelineOptions(vlm_options=selected)
+                converter = DocumentConverter(
+                    format_options={
+                        InputFormat.PDF: PdfFormatOption(
+                            pipeline_cls=VlmPipeline,
+                            pipeline_options=pipeline_options,
+                        )
+                    }
+                )
+            else:
+                log.warning("No known VLM spec found; falling back to standard pipeline.")
+                converter = DocumentConverter()
+        except Exception as e:
+            log.warning("VLM pipeline not available (%s). Using standard pipeline.", e)
+            converter = DocumentConverter()
     else:
-        local_path = src_str
+        converter = DocumentConverter()
 
-    # Construct the converter to use the GraniteDocling VLM pipeline.  We use
-    # VlmPipeline with GraniteDocling specs to obtain a rich markdown
-    # representation that preserves tables, equations and layout【583088636613067†L68-L99】.
-    converter = DocumentConverter(
-        format_options={
-            InputFormat.PDF: PdfFormatOption(
-                pipeline_cls=VlmPipeline,
-                pipeline_options=VlmPipelineOptions(
-                    vlm_options=vlm_model_specs.GRANITEDOCLING_DEFAULT
-                ),
-            )
-        }
-    )
-
-    logger.info("Converting PDF %s to markdown using Docling", source)
-    doc = converter.convert(source=str(local_path)).document
-    markdown = doc.export_to_markdown()
-    return markdown
+    res = converter.convert(source=source)
+    md = res.document.export_to_markdown()
+    return md

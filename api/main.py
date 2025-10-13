@@ -1,11 +1,8 @@
+# api/main.py
 """
 FastAPI application exposing ingestion, search and QA endpoints.
 
-Use ``uvicorn adam_rag.api.main:app --host 0.0.0.0 --port 8000`` to run the
-service.  The server maintains an in‑memory hybrid index which is
-persisted to disk after each ingestion.  Concurrency is limited by the
-Python GIL for CPU‑bound tasks; use multiple worker processes (e.g. via
-gunicorn) to scale ingestion throughput.
+Run: uvicorn api.main:app --host 0.0.0.0 --port 8000
 """
 
 from __future__ import annotations
@@ -21,90 +18,124 @@ from fastapi.responses import JSONResponse
 import config
 from ingestion.docling_parser import convert_pdf_to_markdown
 from ingestion.text_cleaner import clean_markdown
-from ingestion.chunker import split_into_chunks, Chunk
+from ingestion.chunker import split_into_chunks
 from ingestion.deduplication import deduplicate_chunks
 from retrieval.index_store import HybridIndex, RetrievalResult
 from retrieval.search import search_documents
-from qa.answer import answer_question, generate_summary
-from schemas import IngestRequest, IngestResponse, QueryRequest, QueryResponse
+from qa.answer import answer_question, generate_summary, warm_answer_models
+from .schemas import IngestRequest, IngestResponse, QueryRequest, QueryResponse, Citation
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-app = FastAPI(title="ADAM RAG API", version="0.1")
+app = FastAPI(title="ADAM RAG API", version="0.4")
 
-# Global in‑memory index
+# Global in-memory index
 index = HybridIndex(dimension=768)
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    try:
+        warm_answer_models()
+        logger.info("Startup warm completed.")
+    except Exception as e:
+        logger.warning("Warm-up failed: %s", e)
 
 
 @app.post("/ingest/upload", response_model=IngestResponse)
 async def ingest_upload(
     file: UploadFile = File(...),
     summarise: bool = Form(False),
+    # canonical source (e.g., SharePoint URL). Optional; if omitted we store file:// path.
+    source_url: Optional[str] = Form(None),
 ) -> IngestResponse:
     """Ingest a PDF uploaded directly to the API."""
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
-    # Save uploaded file to a temporary location
-    temp_path = config.PDF_CACHE_DIR or Path("/tmp")
-    temp_path.mkdir(parents=True, exist_ok=True)
-    local_file = temp_path / f"upload-{uuid.uuid4().hex}.pdf"
+
+    cache_dir = config.PDF_CACHE_DIR or Path("./.pdf_cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    local_file = cache_dir / f"upload-{uuid.uuid4().hex}.pdf"
     with open(local_file, "wb") as f:
-        content = await file.read()
-        f.write(content)
+        f.write(await file.read())
+
     logger.info("Received uploaded PDF: %s", file.filename)
-    return _process_document(local_file, summarise=summarise)
+
+    base_metadata = {
+        "document_title": file.filename,
+        "source_url": source_url or local_file.resolve().as_uri(),
+    }
+    return _process_document(local_file, summarise=summarise, base_metadata=base_metadata)
 
 
 @app.post("/ingest/url", response_model=IngestResponse)
 async def ingest_url(request: IngestRequest) -> IngestResponse:
-    """Ingest a PDF specified by URL.  The PDF is downloaded using Docling."""
+    """Ingest a PDF specified by URL. The PDF is downloaded using Docling."""
     url = request.url
     if not url.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="URL must point to a PDF file")
-    return _process_document(url, summarise=request.summarise)
+    base_metadata = {
+        "document_title": Path(url).name or "document",
+        "source_url": url,
+    }
+    return _process_document(url, summarise=request.summarise, base_metadata=base_metadata)
 
 
-def _process_document(source: str | Path, *, summarise: bool) -> IngestResponse:
+def _process_document(source: str | Path, *, summarise: bool, base_metadata: dict) -> IngestResponse:
     """Internal helper to ingest a document and update the index."""
-    # Convert PDF to markdown
     markdown = convert_pdf_to_markdown(source)
     cleaned = clean_markdown(markdown)
     document_id = uuid.uuid4().hex
-    # Generate summaries on demand
+
     summariser_fn = generate_summary if summarise else None
     chunks = split_into_chunks(
         cleaned,
         document_id=document_id,
         summarise=summarise,
         summariser=summariser_fn,
+        base_metadata=base_metadata,  # ensure title + source_url propagate to all chunks
     )
-    # Deduplicate
+
     before = len(chunks)
     unique_chunks = deduplicate_chunks(chunks)
     duplicates_removed = before - len(unique_chunks)
-    # Add to index
+
     index.add_chunks(unique_chunks, persist=True)
-    message = f"Ingested {len(unique_chunks)} unique chunks from document."
+    logger.info("Saved index with %d chunks (removed %d duplicates).", len(unique_chunks), duplicates_removed)
+
     return IngestResponse(
         document_id=document_id,
         num_chunks=len(unique_chunks),
         duplicates_removed=duplicates_removed,
-        message=message,
+        message=f"Ingested {len(unique_chunks)} unique chunks from document.",
     )
 
 
 @app.post("/query", response_model=QueryResponse)
 async def query(req: QueryRequest) -> QueryResponse:
-    """Answer a user question using the retrieval index and generative model."""
+    """Answer a user question using retrieval + grounded generation."""
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
-    # Perform search and rerank
+
     results: List[RetrievalResult] = search_documents(index, req.question, top_k=req.top_k)
-    # Generate answer
-    answer_text = answer_question(req.question, results)
-    citations = [res.chunk.id for res in results]
-    return QueryResponse(answer=answer_text, citations=citations)
+    answer_text, cites = answer_question(req.question, results)
+
+    citations_out: List[Citation] = []
+    for c in cites:
+        citations_out.append(
+            Citation(
+                id=c.get("id", ""),
+                score=float(c.get("score", 0.0)),
+                excerpt=c.get("excerpt", "")[:500],
+                section=c.get("section"),
+                heading=c.get("heading"),
+                document_title=c.get("document_title"),
+                source_url=c.get("source_url"),
+            )
+        )
+
+    return QueryResponse(answer=answer_text, citations=citations_out)
 
 
 @app.get("/search")
@@ -118,6 +149,10 @@ async def search_endpoint(query: str, top_k: Optional[int] = None):
             {
                 "id": res.chunk.id,
                 "score": res.score,
+                "section": res.chunk.metadata.get("section", ""),
+                "heading": res.chunk.metadata.get("heading", ""),
+                "document_title": res.chunk.metadata.get("document_title", ""),
+                "source_url": res.chunk.metadata.get("source_url", ""),
                 "text": res.chunk.text[:500] + ("..." if len(res.chunk.text) > 500 else ""),
             }
             for res in results
