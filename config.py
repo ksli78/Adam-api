@@ -61,16 +61,16 @@ INSTRUCT_MODEL_NAME: str = "ibm-granite/granite-3.3-8b-instruct"
 # conservative enough to avoid splitting sentences across boundaries but not so
 # small that context is lost.  Granite embeddings allow up to 8k tokens, but
 # smaller chunks improve retrieval precision and reduce memory requirements.
-MAX_CHUNK_TOKENS: int = 800
+MAX_CHUNK_TOKENS: int = 500
 
 # Number of tokens to overlap between consecutive chunks.  Overlap helps
 # preserve context across boundaries but increases the number of vectors stored.
-CHUNK_OVERLAP: int = 100
+CHUNK_OVERLAP: int = 200
 
 # When cleaning text, remove sections shorter than this many characters.  Very
 # small fragments are unlikely to be informative and can add noise to the
 # retrieval index.
-MIN_SECTION_LENGTH: int = 50
+MIN_SECTION_LENGTH: int = 180
 
 # List of phrases to strip from all documents.  Headers, footers and legal
 # warnings often repeat on every page and harm search quality.  Add your
@@ -91,10 +91,12 @@ ALPHA: float = 0.5
 
 # Number of top documents to return from the combined search before
 # reranking.  The reranker further refines this set.
-TOP_K: int = 10
+TOP_K: int = 12
 
 # Number of top documents to return after reranking.  This should be <= TOP_K.
 TOP_K_RERANKED: int = 5
+
+MIN_RERANK_SCORE: float = 0.15   # drop obviously weak matches
 
 ###############################################################################
 # Removed SharePoint configuration
@@ -108,6 +110,7 @@ TOP_K_RERANKED: int = 5
 ###############################################################################
 # Seed for any random operations, such as embedding model initialisation.
 RANDOM_SEED: int = 42
+
 
 ###############################################################################
 # Helper functions

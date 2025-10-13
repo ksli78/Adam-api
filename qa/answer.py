@@ -7,7 +7,7 @@ import json
 import logging
 from typing import List, Sequence, Tuple, Optional, Dict, Set
 from collections import Counter as CCounter
-
+import textwrap
 import numpy as np
 import requests
 from numpy.linalg import norm
@@ -282,10 +282,37 @@ def answer_question(question: str, results: List[RetrievalResult]) -> Tuple[str,
         return ("Not found in the indexed documents.", [])
 
     # Build evidence lines (safe string ops)
-    evidence_lines: List[str] = []
+    evidence_lines = []
     for i, d in enumerate(top, 1):
-        ev = d["sentence"].replace("\n", " ").strip()
-        evidence_lines.append(f"{i}. {ev}")
+        ev = d.get("sentence", "").replace("\n", " ").strip()
+
+        # d["metadata"] is attached in retrieval; fall back to empty dict
+        md = d.get("metadata", {}) or {}
+
+        heading = str(md.get("heading", "") or "").strip()
+        section = str(md.get("section", "") or "").strip()
+        summary = str(md.get("summary", "") or "").strip()
+
+        note_parts = []
+        # Prefer: (Section 5.4: "Employees requesting approval...")
+        if heading or section:
+            if section and heading:
+                note_parts.append(f'Section {section}: "{heading}"')
+            elif section:
+                note_parts.append(f"Section {section}")
+            else:
+                note_parts.append(f'"{heading}"')
+
+        if summary:
+            # Keep summaries compact; truncate if very long
+            summarized = textwrap.shorten(summary, width=240, placeholder="…")
+            note_parts.append(f"Summary: {summarized}")
+
+        suffix = ""
+        if note_parts:
+            suffix = " (" + " | ".join(note_parts) + ")"
+
+        evidence_lines.append(f"{i}. {ev}{suffix}")
 
     if not had_overlap_pool:
         # No lexical coverage for any informative question token → do not call LLM.
@@ -296,8 +323,9 @@ def answer_question(question: str, results: List[RetrievalResult]) -> Tuple[str,
     else:
         system = (
             "You are a precise assistant. Answer ONLY using the provided evidence. "
-            "Focus strictly on the question’s topic; do not introduce unrelated topics. "
-            "Include any specific identifiers mentioned (e.g., exact form names/numbers). "
+            "Use the policy text verbatim where possible. "
+            "Focus strictly on the question’s topic; do not add unrelated information. "
+            "Include any specific identifiers (e.g., form numbers). "
             "Write 1–3 concise sentences."
         )
         user = "Question: " + question + "\n\nEvidence:\n" + "\n".join(evidence_lines) + "\n\nAnswer:"

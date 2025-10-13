@@ -1,79 +1,120 @@
-"""
-Reranker using IBM's Granite cross‑encoder.
-
-The retriever (dense + lexical search) produces an initial ranking of
-documents.  A cross‑encoder reranker jointly encodes the query and each
-candidate document to compute a more precise relevance score.  IBM's
-``granite‑embedding‑reranker‑english‑r2`` model is designed for this task
-and achieves strong performance on long document retrieval benchmarks【449332267749196†L65-L70】.
-
-This module provides a simple wrapper that loads the model via
-``sentence_transformers.CrossEncoder`` and exposes a ``rank`` method.
-"""
-
+# retrieval/reranker.py
 from __future__ import annotations
-
 import logging
-from typing import List
+import math
+from typing import Any, List, Union
 
-from sentence_transformers import CrossEncoder
+import numpy as np
+
+try:
+    import torch
+    from sentence_transformers import CrossEncoder
+except Exception as exc:
+    CrossEncoder = None
+    _IMPORT_ERR = str(exc)
+else:
+    _IMPORT_ERR = None
 
 import config
-from .index_store import RetrievalResult
 
 logger = logging.getLogger(__name__)
 
+ResultT = Union[dict, Any]  # dict or object with .text/.score etc.
 
-_CROSS_ENCODER: CrossEncoder | None = None
+
+def _as_text(r: ResultT) -> str:
+    if isinstance(r, dict):
+        return str(r.get("text") or r.get("chunk_text") or "")
+    return str(getattr(r, "text", "") or getattr(r, "chunk_text", "") or "")
 
 
-def _load_reranker() -> CrossEncoder:
-    """Load the cross‑encoder model if not already loaded."""
-    global _CROSS_ENCODER
-    if _CROSS_ENCODER is None:
-        logger.info("Loading reranker model %s", config.RERANKER_MODEL_NAME)
-        _CROSS_ENCODER = CrossEncoder(config.RERANKER_MODEL_NAME)
-    return _CROSS_ENCODER
+def _safe_float(x: Any) -> float:
+    try:
+        v = float(x)
+    except Exception:
+        return 0.0
+    if not math.isfinite(v):
+        return 0.0
+    return v
+
+
+def _attach_score(r: ResultT, score: float) -> None:
+    score = _safe_float(score)
+    if isinstance(r, dict):
+        r["rerank_score"] = score
+    else:
+        setattr(r, "rerank_score", score)
 
 
 class Reranker:
-    """Wrapper around a cross‑encoder reranker model."""
-
     def __init__(self) -> None:
-        self.model = _load_reranker()
+        if CrossEncoder is None:
+            raise RuntimeError(
+                f"CrossEncoder not available: {_IMPORT_ERR}. "
+                "Install 'sentence-transformers' and 'torch'."
+            )
+        model_name = getattr(
+            config, "RERANKER_MODEL_NAME",
+            "ibm-granite/granite-embedding-reranker-english-r2"
+        )
+        device = "cuda" if (hasattr(torch, "cuda") and torch.cuda.is_available()) else "cpu"
+        logger.info("Loading sentence reranker: %s (%s)", model_name, device)
 
-    def rank(
-        self,
-        query: str,
-        candidates: List[RetrievalResult],
-        *,
-        top_k: int = config.TOP_K_RERANKED,
-    ) -> List[RetrievalResult]:
-        """Reorder the candidate results using the cross‑encoder.
+        self.model = CrossEncoder(
+            model_name,
+            device=device,
+            max_length=getattr(config, "RERANKER_MAX_LENGTH", 512),
+        )
+        self.batch_size = getattr(config, "RERANKER_BATCH_SIZE", 16)
 
-        Parameters
-        ----------
-        query:
-            The search query.
-        candidates:
-            List of retrieval results to rerank.
-        top_k:
-            Return at most this many results after reranking.
-
-        Returns
-        -------
-        list of :class:`RetrievalResult`
-            The reranked results sorted by descending relevance score.
-        """
-        if not candidates:
+    def rank(self, query: str, results: List[ResultT], top_k: int = 5) -> List[ResultT]:
+        """Return results with .rerank_score attached, sorted desc; fall back to original order on failure."""
+        if not results:
             return []
-        # Prepare inputs for cross encoder: list of [query, document] pairs
-        pairs = [[query, res.chunk.text] for res in candidates]
-        # Compute relevance scores.  Higher scores indicate greater relevance.
-        scores = self.model.predict(pairs)
-        # Attach new scores to results
-        for res, score in zip(candidates, scores):
-            res.score = float(score)
-        # Sort by score descending
-        ranked = sorted(candidates, key=lambda r: r.score, reverse=True)
-        return ranked[:top_k]
+
+        pairs = []
+        keep_idx = []
+        for i, r in enumerate(results):
+            t = _as_text(r).strip()
+            if t:
+                pairs.append((query, t))
+                keep_idx.append(i)
+
+        if not pairs:
+            logger.warning("Reranker: all texts empty; keeping original order.")
+            return results[:max(1, int(top_k))]
+
+        try:
+            scores = self.model.predict(
+                pairs,
+                batch_size=self.batch_size,
+                convert_to_numpy=True,
+                show_progress_bar=False,
+            )
+        except Exception as e:
+            logger.exception("Reranker predict failed: %s. Keeping original order.", e)
+            return results[:max(1, int(top_k))]
+
+        scores = np.asarray(scores, dtype=np.float32).reshape(-1)
+        scores = np.nan_to_num(scores, nan=0.0, posinf=1.0, neginf=0.0)
+
+        for j, idx in enumerate(keep_idx):
+            _attach_score(results[idx], float(scores[j]))
+
+        if float(np.max(scores)) <= 0.0:
+            logger.warning("Reranker: all scores <= 0 after sanitize; keeping original order.")
+            return results[:max(1, int(top_k))]
+
+        def _score_of(x: ResultT) -> float:
+            if isinstance(x, dict):
+                s = x.get("rerank_score", None)
+                if s is None:
+                    s = x.get("score", 0.0)
+            else:
+                s = getattr(x, "rerank_score", None)
+                if s is None:
+                    s = getattr(x, "score", 0.0)
+            return _safe_float(s)
+
+        results_sorted = sorted(results, key=_score_of, reverse=True)
+        return results_sorted[:max(1, int(top_k))]
