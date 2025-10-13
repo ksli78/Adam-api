@@ -114,11 +114,11 @@ def _jaccard(a: Set[str], b: Set[str]) -> float:
 def _select_sentences_overlap_then_semantic_mmr(
     question: str,
     results: Sequence[RetrievalResult],
-    max_sentences: int = 5,
+    max_sentences: int = 20,
     df_uninformative_ratio: float = 0.30,   # tokens in >30% of sentences are uninformative (local)
-    q_ngram_thresh: float = 0.30,           # fuzzy 3-gram Jaccard threshold for overlap
-    min_sem_floor: float = 0.30,            # absolute semantic floor
-    top_rel_ratio: float = 0.80,            # keep >= 80% of best semantic sim
+    q_ngram_thresh: float = 0.25,           # fuzzy 3-gram Jaccard threshold for overlap
+    min_sem_floor: float = 0.15,            # absolute semantic floor
+    top_rel_ratio: float = 0.15,            # keep >= 80% of best semantic sim
     lambda_diversity: float = 0.7,          # MMR tradeoff
 ) -> Tuple[List[Dict], bool]:
     """
@@ -321,21 +321,22 @@ def answer_question(question: str, results: List[RetrievalResult]) -> Tuple[str,
             "Please review the cited policy for details."
         )
     else:
-        # system = (
-        #     "You are a precise assistant. Answer ONLY using the provided evidence. "
-        #     "Use the policy text verbatim where possible. "
-        #     "Focus strictly on the question’s topic; do not add unrelated information. "
-        #     "Include any specific identifiers (e.g., form numbers). "
-        #     "Write 1–3 concise sentences."
-        # )
-        
         system = (
-            "You are a policy assistant.  Answer the user’s question using only the provided evidence. "
-            "When the policy mentions a form or document, include its exact name in your answer. "
-            "List each step in order and do not invent any details that are not explicitly in the evidence."
+            "You are a precise assistant. Answer ONLY using the provided evidence. "
+            "Use the policy text verbatim where possible. "
+            "Focus strictly on the question’s topic; do not add unrelated information. "
+            "Include any specific identifiers (e.g., form numbers). "
+            "Write 1–2 concise paragraphs."
         )
+        
+        # system = (
+        #     "You are a policy assistant.  Answer the user’s question using only the provided evidence. "
+        #     "When the policy mentions a form or document, include its exact name in your answer. "
+        #     "List each step in order and do not invent any details that are not explicitly in the evidence."
+        # )
 
-        user = "Question: " + question + "\n\nEvidence:\n" + "\n".join(evidence_lines) + "\n\nAnswer:"
+        # user = "Question: " + question + "\n\nEvidence:\n" + "\n".join(evidence_lines) + "\n\nAnswer:"
+        user = "Question: " + question + "\n\nEvidence:\n" + "\n\n".join(r.chunk.text for r in results[:3]) + "\n\nAnswer:"
         ans = _ollama_generate(system, user, max_tokens=200) or " ".join(d["sentence"] for d in top[:3])
 
     # citations
