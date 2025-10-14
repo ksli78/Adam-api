@@ -115,25 +115,26 @@ def _select_sentences_overlap_then_semantic_mmr(
     question: str,
     results: Sequence[RetrievalResult],
     max_sentences: int = 20,
-    df_uninformative_ratio: float = 0.30,   # tokens in >30% of sentences are uninformative (local)
-    q_ngram_thresh: float = 0.25,           # fuzzy 3-gram Jaccard threshold for overlap
-    min_sem_floor: float = 0.15,            # absolute semantic floor
-    top_rel_ratio: float = 0.15,            # keep >= 80% of best semantic sim
-    lambda_diversity: float = 0.7,          # MMR tradeoff
+    df_uninformative_ratio: float = 0.30,
+    q_ngram_thresh: float = 0.25,
+    min_sem_floor: float = 0.15,
+    top_rel_ratio: float = 0.15,
+    lambda_diversity: float = 0.7,
 ) -> Tuple[List[Dict], bool]:
     """
     Returns (selected_sentences, had_overlap_pool)
 
-    Step 1: gather sentences
-    Step 2: build informative question tokens (remove stopwords and locally ubiquitous tokens)
-    Step 3: build OVERLAP pool via fuzzy 3-gram Jaccard
-    Step 4: if no overlap, build SEMANTIC pool via embeddings + dynamic gate
-    Step 5: rank chosen pool by cross-encoder; pick with MMR (diversity on embeddings)
+    Strategy:
+      1) Build an overlap pool (fuzzy char-3gram Jaccard).
+      2) If the pool is small or from few chunks, AUGMENT with top semantic sentences
+         preferring NEW chunks first.
+      3) Cross-encoder re-rank for relevance.
+      4) Diversify with round-robin across chunks (optionally with MMR inside each round).
     """
     embedder = _ensure_embedder()
     reranker = _ensure_sentence_reranker()
 
-    # candidates
+    # ---- candidates ----
     candidates: List[Tuple[str, str, Dict]] = []
     sent_tokens: List[Set[str]] = []
     for r in results:
@@ -143,26 +144,27 @@ def _select_sentences_overlap_then_semantic_mmr(
     if not candidates:
         return [], False
 
-    # local DF (domain-agnostic)
+    # ---- local DF to drop ubiquitous tokens ----
     df = CCounter()
     for toks in sent_tokens:
         df.update(set(toks))
     n_sent = max(1, len(sent_tokens))
     uninformative: Set[str] = {t for t, c in df.items() if c >= max(2, int(df_uninformative_ratio * n_sent))}
 
-    # informative question tokens (+ 3-grams)
+    # ---- informative question tokens + 3-grams ----
     q_tokens_inf = [t for t in _content_words(question) if t not in uninformative]
     q_token_ngrams = {t: _char_ngrams(t, 3) for t in q_tokens_inf}
 
-    # semantic sims (for fallback + MMR)
+    # ---- semantic sims for fallback/augmentation ----
     sents = [c[0] for c in candidates]
     q_emb = embedder.encode([question], convert_to_numpy=True, normalize_embeddings=False)[0]
     s_embs = embedder.encode(sents, batch_size=64, convert_to_numpy=True, normalize_embeddings=False)
     sims = np.array([_cos_sim(q_emb, e) for e in s_embs], dtype=np.float32)
-    best_sim = float(np.max(sims))
+    order_by_sem = np.argsort(sims)[::-1].tolist()
+    best_sim = float(np.max(sims)) if sims.size else 0.0
     sem_gate = max(min_sem_floor, best_sim * top_rel_ratio)
 
-    # (A) overlap pool
+    # ---- (A) overlap pool via fuzzy n-gram Jaccard ----
     overlap_idx: List[int] = []
     if q_tokens_inf:
         sent_token_ngrams = [{st: _char_ngrams(st, 3) for st in toks} for toks in sent_tokens]
@@ -179,55 +181,109 @@ def _select_sentences_overlap_then_semantic_mmr(
                     break
             if best_j >= q_ngram_thresh:
                 overlap_idx.append(i)
-
     had_overlap_pool = len(overlap_idx) > 0
 
-    # choose pool
-    if had_overlap_pool:
-        pool_idx = overlap_idx
-    else:
-        # semantic fallback ONLY to provide neutral citations; not a license to claim facts
-        pool_idx = [i for i, s in enumerate(sims) if s >= sem_gate] or [int(np.argmax(sims))]
+    # ---- build pool with cross-chunk augmentation ----
+    MIN_POOL_SIZE = min(8, max_sentences)
+    pool_idx: List[int] = list(dict.fromkeys(overlap_idx)) if had_overlap_pool else [
+        i for i in order_by_sem if sims[i] >= sem_gate
+    ]
+
+    # Prefer adding items from NEW chunks first
+    def chunk_id(i: int) -> str:
+        return candidates[i][1]
+
+    have_chunks = {chunk_id(i) for i in pool_idx}
+    # First pass: add top semantic items from *new* chunks until threshold
+    if len(pool_idx) < MIN_POOL_SIZE:
+        for i in order_by_sem:
+            cid = chunk_id(i)
+            if cid in have_chunks:
+                continue
+            pool_idx.append(i)
+            have_chunks.add(cid)
+            if len(pool_idx) >= MIN_POOL_SIZE:
+                break
+    # Second pass: still short? pad by overall semantics
+    if len(pool_idx) < MIN_POOL_SIZE:
+        for i in order_by_sem:
+            if i not in pool_idx:
+                pool_idx.append(i)
+            if len(pool_idx) >= MIN_POOL_SIZE:
+                break
 
     kept_candidates = [candidates[i] for i in pool_idx]
     kept_embs = s_embs[pool_idx]
 
-    # cross-encoder ranking
+    # ---- cross-encoder re-ranking (relevance) ----
     pairs = [(question, c[0]) for c in kept_candidates]
-    ce_scores = reranker.predict(pairs, batch_size=16, show_progress_bar=False).tolist()
-    cemin, cemax = float(min(ce_scores)), float(max(ce_scores))
-    ce_norm = [(s - cemin) / (cemax - cemin) if cemax > cemin else 0.5 for s in ce_scores]
+    try:
+        ce_scores = reranker.predict(pairs, batch_size=16, show_progress_bar=False).tolist()
+    except Exception:
+        ce_scores = [float(sims[i]) for i in pool_idx]  # fallback to bi-encoder sims
 
-    # greedy MMR
-    selected: List[int] = []
-    while len(selected) < max_sentences and len(selected) < len(kept_candidates):
-        best_i, best_mmr = -1, -1.0
-        for i in range(len(kept_candidates)):
-            if i in selected:
+    # Normalize embeddings for diversity calcs if needed later
+    kept_norm = kept_embs.astype(np.float32)
+    norms = np.linalg.norm(kept_norm, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    kept_norm = kept_norm / norms
+
+    # ---- round-robin across chunks (guarantees >1 sentence if multiple chunks exist) ----
+    # (empirically used in diversification pipelines; simple & effective)  # noqa
+    # Build groups by chunk with items sorted by CE score desc
+    idx_sorted = sorted(range(len(kept_candidates)), key=lambda i: ce_scores[i], reverse=True)
+    groups: Dict[str, List[int]] = {}
+    for i in idx_sorted:
+        groups.setdefault(kept_candidates[i][1], []).append(i)
+
+    # cycle through groups, pick 1 at a time (optionally MMR inside ties)
+    picked: List[int] = []
+    per_chunk_cap = 1  # set to 2 if you want more per chunk
+    group_order = list(groups.keys())
+
+    while len(picked) < max_sentences:
+        made_progress = False
+        for g in group_order:
+            g_list = groups[g]
+            # enforce per-chunk cap
+            taken_from_g = sum(1 for p in picked if kept_candidates[p][1] == g)
+            if taken_from_g >= per_chunk_cap:
                 continue
-            if not selected:
-                div_pen = 0.0
-            else:
-                div_pen = max(float(_cos_sim(kept_embs[i], kept_embs[j])) for j in selected)
-            mmr = lambda_diversity * ce_norm[i] - (1.0 - lambda_diversity) * div_pen
-            if mmr > best_mmr:
-                best_mmr, best_i = mmr, i
-        if best_i == -1:
-            break
-        selected.append(best_i)
+            # pick next best from this chunk
+            if g_list:
+                cand_i = g_list.pop(0)
+                picked.append(cand_i)
+                made_progress = True
+                if len(picked) >= max_sentences:
+                    break
+        if not made_progress:
+            break  # exhausted all groups
 
-    # one excerpt per chunk
-    seen = set()
+    # If we still have room (few chunks), fill remaining with global MMR on leftovers
+    if len(picked) < max_sentences:
+        remaining = [i for i in idx_sorted if i not in picked]
+        ce_min, ce_max = min(ce_scores) if ce_scores else 0.0, max(ce_scores) if ce_scores else 1.0
+        ce_norm = [(s - ce_min) / (ce_max - ce_min) if ce_max > ce_min else 0.5 for s in ce_scores]
+        while remaining and len(picked) < max_sentences:
+            best_i, best_mmr = -1, -1e9
+            for i in remaining:
+                if not picked:
+                    div_pen = 0.0
+                else:
+                    div_pen = max(float(np.dot(kept_norm[i], kept_norm[j])) for j in picked)
+                mmr = lambda_diversity * ce_norm[i] - (1.0 - lambda_diversity) * div_pen
+                if mmr > best_mmr:
+                    best_mmr, best_i = mmr, i
+            if best_i == -1:
+                break
+            picked.append(best_i)
+            remaining.remove(best_i)
+
+    # ---- output ----
     out: List[Dict] = []
-    for idx in selected:
-        sent, cid, md = kept_candidates[idx]
-        # if cid in seen:
-        #     continue
-        seen.add(cid)
-        out.append({"sentence": sent, "score": float(ce_scores[idx]), "chunk_id": cid, "metadata": md})
-        if len(out) >= max_sentences:
-            break
-
+    for i in picked[:max_sentences]:
+        sent, cid, md = kept_candidates[i]
+        out.append({"sentence": sent, "score": float(ce_scores[i]), "chunk_id": cid, "metadata": md})
     return out, had_overlap_pool
 
 # ----------------------------
@@ -335,8 +391,8 @@ def answer_question(question: str, results: List[RetrievalResult]) -> Tuple[str,
         #     "List each step in order and do not invent any details that are not explicitly in the evidence."
         # )
 
-        # user = "Question: " + question + "\n\nEvidence:\n" + "\n".join(evidence_lines) + "\n\nAnswer:"
-        user = "Question: " + question + "\n\nEvidence:\n" + "\n\n".join(r.chunk.text for r in results[:3]) + "\n\nAnswer:"
+        user = "Question: " + question + "\n\nEvidence:\n" + "\n".join(evidence_lines) + "\n\nAnswer:"
+        #user = "Question: " + question + "\n\nEvidence:\n" + "\n\n".join(r.chunk.text for r in results[:3]) + "\n\nAnswer:"
         ans = _ollama_generate(system, user, max_tokens=200) or " ".join(d["sentence"] for d in top[:3])
 
     # citations

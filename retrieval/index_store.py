@@ -2,10 +2,8 @@
 Persistent hybrid retrieval index.
 
 This module defines the :class:`HybridIndex` class which maintains a
-combined dense and lexical index of document chunks.  Dense vectors are
-stored using FAISS, a high‑performance nearest neighbour library.  Lexical
-features are stored using a TF‑IDF matrix built with scikit‑learn.  A
-configurable weight balances the two scores during search.
+combined dense and lexical index of document chunks. Dense vectors are
+stored using FAISS. Lexical features are stored using a TF-IDF matrix.
 """
 
 from __future__ import annotations
@@ -17,6 +15,13 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
+from scipy import sparse  # robust sparse persistence
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+import config
+from ingestion.chunker import Chunk
+from ingestion.embedder import EMBEDDINGS_AVAILABLE, EMBEDDINGS_IMPORT_ERROR, embed_texts
 
 logger = logging.getLogger(__name__)
 
@@ -30,262 +35,305 @@ if _MATCH and int(_MATCH.group(1)) >= 2:
     _FAISS_IMPORT_ERROR = (
         "Faiss Python bindings bundled with this project require NumPy < 2. "
         f"Detected numpy=={_NUMPY_VERSION}. "
-        "Please reinstall with \"pip install 'numpy<2 faiss-cpu==1.8.0.post1'\" "
-        "or use the provided requirements.txt."
+        "Please reinstall with \"pip install 'numpy<2 faiss-cpu==1.8.0.post1'\"."
     )
 
 if _FAISS_AVAILABLE:
     try:
         import faiss  # type: ignore
-    except (ImportError, AttributeError) as exc:  # pragma: no cover - import guard
+    except (ImportError, AttributeError) as exc:  # pragma: no cover
         _FAISS_AVAILABLE = False
         _FAISS_IMPORT_ERROR = (
-            "Failed to import faiss. Ensure numpy<2 and faiss-cpu==1.8.0.post1 "
-            "(see requirements.txt/Dockerfile)."
+            "Failed to import faiss. Ensure numpy<2 and faiss-cpu==1.8.0.post1."
         )
         logger.warning("FAISS unavailable: %s", exc)
-else:  # pragma: no cover - defensive branch
+else:  # pragma: no cover
     faiss = None  # type: ignore
 
 if not _FAISS_AVAILABLE and _FAISS_IMPORT_ERROR:
     logger.warning("FAISS disabled: %s", _FAISS_IMPORT_ERROR)
 
-if TYPE_CHECKING:  # pragma: no cover - type checking aid
+if TYPE_CHECKING:  # pragma: no cover
     import faiss  # type: ignore  # noqa: F401
-
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-
-import config
-from ingestion.chunker import Chunk
-from ingestion.embedder import EMBEDDINGS_AVAILABLE, EMBEDDINGS_IMPORT_ERROR, embed_texts
 
 
 @dataclass
 class RetrievalResult:
     """Container for a retrieved chunk and its similarity score."""
-
     chunk: Chunk
     score: float
 
 
 class HybridIndex:
-    """Hybrid dense/lexical index for retrieval.
-
-    The index consists of a FAISS vector index for dense retrieval and a
-    TF‑IDF matrix for lexical retrieval.  Metadata for each chunk is stored
-    alongside to facilitate result reconstruction.
-    """
-
+    """Hybrid dense/lexical index for retrieval."""
     def __init__(self, *, dimension: int = 768) -> None:
         self.dimension = dimension
-        # Dense index
         self.faiss_index: Optional["faiss.IndexFlatIP"] = None
-        # Lexical index
         self.tfidf_vectorizer: Optional[TfidfVectorizer] = None
-        self.tfidf_matrix: Optional[np.ndarray] = None
-        # Metadata mapping index positions to chunks
+        self.tfidf_matrix: Optional[sparse.spmatrix] = None
         self.chunks: List[Chunk] = []
 
-        # Attempt to load existing index from disk
-        if config.FAISS_INDEX_PATH.exists() and config.TFIDF_INDEX_PATH.exists():
-            try:
-                self._load()
-            except Exception as exc:
-                logger.error("Failed to load existing index: %s", exc)
-                # Fall back to new empty index
+        # Try to auto-load if everything exists (safe on restarts)
+        try:
+            self.load_if_exists()
+        except Exception as exc:
+            logger.error("Auto-load failed; starting empty index: %s", exc)
+
         if _FAISS_AVAILABLE and EMBEDDINGS_AVAILABLE and self.faiss_index is None:
-            # Create a new index for inner product similarity (cosine after normalisation)
             self.faiss_index = faiss.IndexFlatIP(self.dimension)
         if not _FAISS_AVAILABLE:
-            logger.warning(
-                "FAISS features disabled; dense retrieval will fall back to lexical-only searches."
-            )
+            logger.warning("FAISS disabled; dense retrieval falls back to lexical-only.")
         if _FAISS_AVAILABLE and not EMBEDDINGS_AVAILABLE:
             logger.warning(
-                "Dense retrieval disabled because SentenceTransformer could not be imported%s.",
+                "Dense retrieval disabled; SentenceTransformer unavailable%s.",
                 f": {EMBEDDINGS_IMPORT_ERROR}" if EMBEDDINGS_IMPORT_ERROR else "",
             )
 
-    def _save(self) -> None:
-        """Persist the index and metadata to disk."""
-        if _FAISS_AVAILABLE and self.faiss_index is not None:
-            # Save FAISS index
-            faiss.write_index(self.faiss_index, str(config.FAISS_INDEX_PATH))
-        # Save TF‑IDF matrix and vectorizer
-        with open(config.TFIDF_INDEX_PATH, "wb") as f:
-            np.savez(f, data=self.tfidf_matrix)
-        with open(config.TFIDF_INDEX_PATH.with_suffix(".json"), "w", encoding="utf-8") as f:
-            # Save vectoriser vocabulary and idf
-            vectorizer_state = {
-                "vocabulary_": self.tfidf_vectorizer.vocabulary_,
-                "idf_": self.tfidf_vectorizer.idf_.tolist(),
-            }
-            json.dump(vectorizer_state, f)
-        # Save metadata
-        metadata_path = config.FAISS_INDEX_PATH.with_suffix(".meta.json")
-        with open(metadata_path, "w", encoding="utf-8") as f:
-            json.dump([c.to_dict() for c in self.chunks], f)
-        logger.info("Saved index with %d chunks", len(self.chunks))
+    # -------------------- persistence helpers --------------------
 
-    def _load(self) -> None:
-        """Load the index and metadata from disk."""
-        # Load FAISS index if available
-        if _FAISS_AVAILABLE:
-            self.faiss_index = faiss.read_index(str(config.FAISS_INDEX_PATH))
-        else:
-            logger.debug("Skipping FAISS index load because FAISS is unavailable.")
-        # Load TF‑IDF matrix
-        with np.load(config.TFIDF_INDEX_PATH, allow_pickle=True) as data:
-            self.tfidf_matrix = data["data"]
-        # Load vectoriser state
-        state_file = config.TFIDF_INDEX_PATH.with_suffix(".json")
-        with open(state_file, "r", encoding="utf-8") as f:
-            state = json.load(f)
-        self.tfidf_vectorizer = TfidfVectorizer()
-        self.tfidf_vectorizer.vocabulary_ = state["vocabulary_"]
-        self.tfidf_vectorizer.idf_ = np.array(state["idf_"])  # type: ignore
-        self.tfidf_vectorizer._tfidf._idf_diag = None  # lazy update
-        # Load metadata
-        metadata_path = config.FAISS_INDEX_PATH.with_suffix(".meta.json")
-        with open(metadata_path, "r", encoding="utf-8") as f:
-            metadata_list = json.load(f)
-        self.chunks = []
-        for meta in metadata_list:
-            chunk = Chunk(
-                id=meta["id"],
-                document_id=meta.get("document_id", ""),
-                text=meta["text"],
-                token_count=meta.get("token_count", 0),
-                start_paragraph=meta.get("start_paragraph", 0),
-                end_paragraph=meta.get("end_paragraph", 0),
-                summary=meta.get("summary"),
+    @staticmethod
+    def _tfidf_matrix_path():
+        """
+        Persist the sparse TF-IDF matrix as NPZ.
+        If config.TFIDF_INDEX_PATH already ends with .npz we use it,
+        otherwise we store next to it with a .npz suffix.
+        """
+        p = config.TFIDF_INDEX_PATH
+        return p if p.suffix.lower() == ".npz" else p.with_suffix(".npz")
+
+    @staticmethod
+    def _tfidf_vectorizer_path():
+        # Keep compatibility with previous naming: <tfidf>.json
+        return config.TFIDF_INDEX_PATH.with_suffix(".json")
+
+    @staticmethod
+    def _metadata_path():
+        return config.FAISS_INDEX_PATH.with_suffix(".meta.json")
+
+    def _save(self) -> None:
+        """Persist FAISS, TF-IDF and metadata to disk."""
+        try:
+            config.ensure_directories()
+        except Exception as e:
+            logger.warning("ensure_directories failed (continuing): %s", e)
+
+        # Save FAISS (when available)
+        if _FAISS_AVAILABLE and self.faiss_index is not None:
+            faiss.write_index(self.faiss_index, str(config.FAISS_INDEX_PATH))
+
+        # Save TF-IDF sparse matrix
+        if self.tfidf_matrix is not None:
+            sparse.save_npz(self._tfidf_matrix_path(), self.tfidf_matrix, compressed=True)
+
+        # Save vectorizer state
+        if self.tfidf_vectorizer is not None and hasattr(self.tfidf_vectorizer, "vocabulary_"):
+            vec_state = {
+                "vocabulary_": self.tfidf_vectorizer.vocabulary_,
+                "idf_": (
+                    self.tfidf_vectorizer.idf_.tolist()
+                    if hasattr(self.tfidf_vectorizer, "idf_")
+                    else None
+                ),
+            }
+            with open(self._tfidf_vectorizer_path(), "w", encoding="utf-8") as f:
+                json.dump(vec_state, f)
+
+        # Save metadata (chunks)
+        with open(self._metadata_path(), "w", encoding="utf-8") as f:
+            json.dump([c.to_dict() for c in self.chunks], f)
+
+        logger.info(
+            "Saved index: %d chunks (dense=%s, lexical=%s)",
+            len(self.chunks),
+            "yes" if (self.faiss_index is not None and (_FAISS_AVAILABLE)) else "no",
+            "yes" if (self.tfidf_matrix is not None) else "no",
+        )
+
+    def load_if_exists(self) -> bool:
+        """
+        Load any existing on-disk artifacts (FAISS, TF-IDF, metadata) if present.
+        Returns True if at least one component was loaded; False on first-run.
+        Safe to call multiple times.
+        """
+        loaded_any = False
+
+        # Load FAISS index if the file exists and FAISS available
+        if _FAISS_AVAILABLE and config.FAISS_INDEX_PATH.exists():
+            try:
+                self.faiss_index = faiss.read_index(str(config.FAISS_INDEX_PATH))
+                loaded_any = True
+            except Exception as e:
+                logger.warning("Failed to read FAISS index (%s). Recreating empty dense index.", e)
+                self.faiss_index = faiss.IndexFlatIP(self.dimension)
+
+        # Load TF-IDF sparse matrix and vectorizer state
+        mat_path = self._tfidf_matrix_path()
+        vec_path = self._tfidf_vectorizer_path()
+        if mat_path.exists() and vec_path.exists():
+            try:
+                self.tfidf_matrix = sparse.load_npz(mat_path)
+                with open(vec_path, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+                self.tfidf_vectorizer = TfidfVectorizer()
+                self.tfidf_vectorizer.vocabulary_ = state.get("vocabulary_", {})
+                idf = state.get("idf_")
+                if idf is not None:
+                    self.tfidf_vectorizer.idf_ = np.array(idf, dtype=float)  # type: ignore[attr-defined]
+                    # force lazy rebuild of the internal diagonal
+                    self.tfidf_vectorizer._tfidf._idf_diag = None
+                loaded_any = True
+            except Exception as e:
+                logger.warning("Failed to load TF-IDF artifacts (%s). Rebuilding on next save.", e)
+                self.tfidf_vectorizer = None
+                self.tfidf_matrix = None
+
+        # Load metadata (chunks)
+        meta_path = self._metadata_path()
+        if meta_path.exists():
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    metadata_list = json.load(f)
+
+                self.chunks = []
+                for m in metadata_list:
+                    # Backward compatibility:
+                    # - use empty dict if 'metadata' missing
+                    # - if an old dump had 'source' at top level, fold it into metadata
+                    md = m.get("metadata") or ({"source": m.get("source")} if m.get("source") else {})
+                    self.chunks.append(
+                        Chunk(
+                            id=m.get("id"),
+                            document_id=m.get("document_id", ""),
+                            text=m.get("text", ""),
+                            token_count=m.get("token_count", 0),
+                            start_paragraph=m.get("start_paragraph", 0),
+                            end_paragraph=m.get("end_paragraph", 0),
+                            summary=m.get("summary"),
+                            metadata=md,  # <-- required by Chunk __init__
+                        )
+                    )
+                loaded_any = True
+            except Exception as e:
+                logger.warning("Failed to load metadata (%s). Starting with empty chunk list.", e)
+                self.chunks = []
+
+        if loaded_any:
+            logger.info(
+                "Loaded index from disk (chunks=%d, dense=%s, lexical=%s).",
+                len(self.chunks),
+                "yes" if (self.faiss_index is not None and (_FAISS_AVAILABLE)) else "no",
+                "yes" if (self.tfidf_matrix is not None) else "no",
             )
-            self.chunks.append(chunk)
-        logger.info("Loaded index with %d chunks", len(self.chunks))
+        else:
+            logger.info("No on-disk index found yet (first run).")
+
+        return loaded_any
+
+    # -------------------- building / querying --------------------
 
     def _rebuild_tfidf(self) -> None:
-        """Rebuild the TF‑IDF matrix and vectoriser from current chunks."""
-        self.tfidf_vectorizer = TfidfVectorizer()
+        """Rebuild the TF-IDF matrix and vectoriser from current chunks."""
         texts = [c.text for c in self.chunks]
         if texts:
+            self.tfidf_vectorizer = TfidfVectorizer()
             self.tfidf_matrix = self.tfidf_vectorizer.fit_transform(texts)
         else:
+            self.tfidf_vectorizer = TfidfVectorizer()
             self.tfidf_matrix = None
 
     def add_chunks(self, chunks: Iterable[Chunk], *, persist: bool = True) -> None:
-        """Add new chunks to the index and optionally persist it to disk.
-
-        Parameters
-        ----------
-        chunks:
-            Iterable of chunks to index.  Each chunk should have its
-            embedding computed before being added.
-        persist:
-            If ``True``, save the index to disk after adding the chunks.
+        """
+        Add new chunks to the index and optionally persist it to disk.
         """
         new_chunks = list(chunks)
         if not new_chunks:
             return
-        # Compute embeddings for new chunks when dense retrieval is available
+
+        # Dense embeddings
         if _FAISS_AVAILABLE and EMBEDDINGS_AVAILABLE:
             texts = [c.text for c in new_chunks]
             vectors = embed_texts(texts)
-            # Normalise vectors to unit length for cosine similarity
-            vectors = [v / np.linalg.norm(v) if np.linalg.norm(v) > 0 else v for v in vectors]
-            matrix = np.vstack(vectors).astype("float32")
-            # Add to FAISS index
+            # L2-normalize for cosine via inner product
+            mat = []
+            for v in vectors:
+                n = np.linalg.norm(v)
+                mat.append((v / n) if n > 0 else v)
+            matrix = np.vstack(mat).astype("float32")
             if self.faiss_index is None:
                 self.faiss_index = faiss.IndexFlatIP(self.dimension)
             self.faiss_index.add(matrix)
         else:
             if not _FAISS_AVAILABLE:
-                logger.debug("Skipping dense embedding generation because FAISS is unavailable.")
+                logger.debug("Skipping dense embeddings: FAISS unavailable.")
             elif not EMBEDDINGS_AVAILABLE:
-                logger.debug(
-                    "Skipping dense embedding generation because SentenceTransformer dependencies are unavailable."
-                )
-        # Append new chunks to metadata list
+                logger.debug("Skipping dense embeddings: embedding model unavailable.")
+
         self.chunks.extend(new_chunks)
-        # Rebuild TF‑IDF index from scratch (small overhead compared to ingesting all docs)
         self._rebuild_tfidf()
+
         if persist:
             self._save()
 
     def search(self, query: str, *, top_k: int = config.TOP_K, alpha: float = config.ALPHA) -> List[Tuple[int, float]]:
-        """Search the index for a given query and return ranked indices.
-
-        The result is a list of tuples ``(chunk_idx, score)`` where
-        ``chunk_idx`` indexes into :attr:`chunks`.
-
-        Parameters
-        ----------
-        query:
-            The natural language query to search for.
-        top_k:
-            Number of top results to return.
-        alpha:
-            Weighting between dense similarity and lexical similarity【449332267749196†L65-L70】.
-
-        Returns
-        -------
-        list of (int, float)
-            List of index positions and combined scores sorted in descending
-            order.
+        """
+        Search the index for a given query and return ranked indices.
+        Returns list of (chunk_idx, score) sorted by score desc.
         """
         if not self.chunks:
             return []
+
         dense_indices: np.ndarray = np.array([], dtype=int)
         dense_scores: np.ndarray = np.array([], dtype=float)
+
         dense_ready = (
             _FAISS_AVAILABLE
             and EMBEDDINGS_AVAILABLE
             and self.faiss_index is not None
-            and self.faiss_index.ntotal > 0
+            and getattr(self.faiss_index, "ntotal", 0) > 0
         )
         dense_weight = alpha if dense_ready else 0.0
+
         if dense_weight > 0:
-            # Compute dense embedding for query
-            query_vec = embed_texts([query])[0]
-            query_norm = np.linalg.norm(query_vec)
-            if query_norm > 0:
-                query_vec = query_vec / query_norm
-            # Dense search
-            D, I = self.faiss_index.search(np.array([query_vec], dtype="float32"), top_k)
+            q_vec = embed_texts([query])[0]
+            n = np.linalg.norm(q_vec)
+            if n > 0:
+                q_vec = q_vec / n
+            D, I = self.faiss_index.search(np.array([q_vec], dtype="float32"), top_k)
             dense_scores = D[0]
             dense_indices = I[0]
-        # Lexical search
+
         lexical_scores = None
         lexical_indices = None
         if self.tfidf_vectorizer is not None and self.tfidf_matrix is not None:
             q_tfidf = self.tfidf_vectorizer.transform([query])
-            # Compute cosine similarity between query and documents
             sim = cosine_similarity(q_tfidf, self.tfidf_matrix).flatten()
-            # Get top_k lexical indices
-            lex_order = np.argsort(sim)[::-1][: top_k]
+            lex_order = np.argsort(sim)[::-1][:top_k]
             lexical_scores = sim[lex_order]
             lexical_indices = lex_order
-        # Combine scores
+
         combined: Dict[int, float] = {}
-        # Add dense scores
+
         for idx, score in zip(dense_indices, dense_scores):
             combined[idx] = combined.get(idx, 0.0) + float(dense_weight * score)
-        # Add lexical scores
+
         lexical_weight = 1.0 - dense_weight
         if lexical_indices is not None and lexical_scores is not None:
             for idx, score in zip(lexical_indices, lexical_scores):
                 combined[idx] = combined.get(idx, 0.0) + float(lexical_weight * score)
+
         if not combined and lexical_indices is not None and lexical_scores is not None:
-            # Dense retrieval unavailable; return lexical results directly
             return list(zip(lexical_indices.tolist(), lexical_scores.tolist()))[:top_k]
-        # Sort combined scores
+
         ranked = sorted(combined.items(), key=lambda x: x[1], reverse=True)
         return ranked[:top_k]
 
     def get_results(self, ranked_indices: List[Tuple[int, float]]) -> List[RetrievalResult]:
-        """Convert ranked index positions into :class:`RetrievalResult` objects."""
         results: List[RetrievalResult] = []
         for idx, score in ranked_indices:
             if 0 <= idx < len(self.chunks):
                 results.append(RetrievalResult(chunk=self.chunks[idx], score=score))
         return results
+
+
+# Global singleton used by the app
+index = HybridIndex()

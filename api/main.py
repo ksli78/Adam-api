@@ -164,6 +164,7 @@ async def _startup() -> None:
     # Warm index lazily
     try:
         _ = index
+        index.load_if_exists()
     except Exception as e:
         logger.warning("Index not ready on startup: %s", e)
     # Warm answer models if available
