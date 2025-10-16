@@ -76,6 +76,85 @@ def _ensure_embedder() -> SentenceTransformer:
 # ----------------------------
 # Text & similarity utils
 # ----------------------------
+# ----------------------------
+# Compression / noise filter (keep only decisive, same-document snippets)
+# ----------------------------
+import re
+
+_BANNED_SECTION_TITLES = {
+    "purpose", "scope", "definitions", "applicable and reference documents",
+    "document history", "glossary"
+}
+_DECISIVE_PATTERNS = [
+    r"\bnot\s+permitted\b",
+    r"\bmay\s+not\b",
+    r"\bprohibited\b",
+    r"\bdoes\s+not\s+constitute\s+an\s+approved\s+reason\b",
+    r"\bconstitutes\s+immediate\s+termination\b",
+    r"\brequires?\b.*\bapproval\b",
+]
+
+def _is_banned_section(md: Dict) -> bool:
+    h = (md or {}).get("heading") or (md or {}).get("section") or ""
+    return bool(h and h.strip().lower() in _BANNED_SECTION_TITLES)
+
+def _decisive_score(text: str) -> int:
+    t = text.lower()
+    score = 0
+    for pat in _DECISIVE_PATTERNS:
+        if re.search(pat, t):
+            score += 1
+    return score
+
+def _compress_policy_snippets(
+    question: str,
+    snippets: List[Dict],
+    *,
+    max_keep: int = 2,
+    prefer_single_document: bool = True
+) -> List[Dict]:
+    """
+    Each snippet: {'sentence','score','chunk_id','metadata'}.
+    Keeps 1–2 decisive, on-topic lines from the best-matching document.
+    """
+    if not snippets:
+        return []
+
+    # 1) Optionally restrict to the single most relevant document
+    pool = snippets
+    if prefer_single_document:
+        by_doc: Dict[str, List[Dict]] = {}
+        for s in snippets:
+            md = s.get("metadata") or {}
+            doc_id = md.get("document_id") or s.get("chunk_id")
+            by_doc.setdefault(str(doc_id), []).append(s)
+        scored_docs = [(doc, sum(x.get("score", 0.0) for x in lst)) for doc, lst in by_doc.items()]
+        top_doc = max(scored_docs, key=lambda x: x[1])[0]
+        pool = by_doc[top_doc]
+
+    # 2) Drop boilerplate sections (Scope, Definitions, Purpose…)
+    pool = [s for s in pool if not _is_banned_section(s.get("metadata") or {})] or pool
+
+    # 3) Rank by decisive phrases first, then reranker score
+    ranked = sorted(
+        pool,
+        key=lambda s: (_decisive_score(s.get("sentence", "")), float(s.get("score", 0.0))),
+        reverse=True,
+    )
+
+    # 4) Deduplicate near-identical sentences and cap
+    seen = set()
+    out: List[Dict] = []
+    for s in ranked:
+        t = s.get("sentence", "").strip().lower()
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append(s)
+        if len(out) >= max_keep:
+            break
+    return out
+
 def _simple_sentence_split(s: str) -> List[str]:
     import re
     s = s.replace("\r", "")
@@ -295,7 +374,7 @@ def _ollama_generate(system_prompt: str, user_prompt: str, max_tokens: int = 220
             "model": _OLLAMA_MODEL,
             "prompt": f"<|system|>\n{system_prompt}\n<|user|>\n{user_prompt}",
             "stream": False,
-            "options": {"num_predict": max_tokens, "temperature": 0.2, "top_p": 0.9},
+            "options": {"num_predict": max_tokens, "temperature": 0.0, "top_p": 0.9},
         }
         r = requests.post(
             f"{_OLLAMA_BASE}/api/generate",
@@ -336,6 +415,8 @@ def answer_question(question: str, results: List[RetrievalResult]) -> Tuple[str,
     top, had_overlap_pool = _select_sentences_overlap_then_semantic_mmr(question, results, max_sentences=20)
     if not top:
         return ("Not found in the indexed documents.", [])
+    # shrink noisy evidence to only the decisive 1–2 lines from the best-matching doc
+    top = _compress_policy_snippets(question,top,max_keep=2,prefer_single_document=True)
 
     # Build evidence lines (safe string ops)
     evidence_lines = []
@@ -382,7 +463,9 @@ def answer_question(question: str, results: List[RetrievalResult]) -> Tuple[str,
             "Use the policy text verbatim where possible. "
             "Focus strictly on the question’s topic; do not add unrelated information. "
             "Include any specific identifiers (e.g., form numbers). "
-            "Write 1–2 concise paragraphs."
+            "Do not add any extra context, examples, or unrelated policy text. "
+            "If the policy forbids something, say so directly and quote the decisive clause verbatim."
+            "Write 1–3 concise sentences."
         )
         
         # system = (
