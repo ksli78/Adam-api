@@ -1,3 +1,59 @@
-.hf
-/retrieval/__pycache__/index_store.cpython-311.pyc
-/uploads/*.pdf
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Data directories
+/data/
+/uploads/
+
+# Docker volumes
+docker-volumes/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# Hugging Face cache
+.hf/
+
+# ChromaDB
+chromadb/
+*.db
+
+# Temporary files
+*.tmp
+*.bak
+temp/
+tmp/
+
+# Export directory
+rhel9-deployment/
