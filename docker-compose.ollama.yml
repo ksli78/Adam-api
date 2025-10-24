@@ -26,13 +26,13 @@ services:
       - airgapped-rag-net
 
     # Uncomment for GPU support (NVIDIA on Windows with WSL2)
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
     # Health check
     healthcheck:
