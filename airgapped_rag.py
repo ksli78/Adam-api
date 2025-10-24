@@ -460,52 +460,52 @@ Rewritten Query:"""
         if doc_metadata.get('doc_title'):
             metadata_context += f"Document Title: {doc_metadata['doc_title']}\n"
 
-        prompt = f"""You are analyzing a corporate policy document. Create a searchable description that will help find this document when users ask questions.
+        # Build base from metadata
+        doc_number = doc_metadata.get('doc_number', '')
+        doc_title = doc_metadata.get('doc_title', '')
 
-{metadata_context}
+        # If we have metadata, just extract key topics from content
+        if doc_number and doc_title:
+            prompt = f"""Read this policy document and list the main topics it covers.
 
-Document Content (first portion):
+Document: {doc_title} ({doc_number})
+
+Content excerpt:
 {sample}
 
-Create a comprehensive searchable description using this format:
-"[Document Title] [Document Number]: [Main Topic] - [Key Details and Terms]"
+List key topics and terms covered (one line, comma-separated):"""
 
-Include:
-- The document title and number
-- Main policy topic
-- Key terms that users might search for
-- Important concepts covered
+            try:
+                response = ollama.generate(
+                    model=self.llm_model,
+                    prompt=prompt,
+                    options={
+                        'temperature': 0.2,
+                        'num_predict': 60
+                    }
+                )
+                topics = response['response'].strip()
 
-Keep it under 200 characters but make it specific and searchable.
+                # Clean up common prefixes and get first line
+                topics = re.sub(r'^(Topics?:|Key topics?:|Terms?:|Here (is|are)|This (document|policy) covers?:)\s*', '', topics, flags=re.IGNORECASE)
+                topics = topics.split('\n')[0].strip()
 
-Searchable Description:"""
+                # Remove quotes if present
+                topics = topics.strip('"\'')
 
-        try:
-            response = ollama.generate(
-                model=self.llm_model,
-                prompt=prompt,
-                options={
-                    'temperature': 0.2,
-                    'num_predict': 100
-                }
-            )
-            topic = response['response'].strip()
-            # Clean up the topic
-            topic = re.sub(r'^(Topic:|Title:|Summary:|Description:)\s*', '', topic, flags=re.IGNORECASE)
-            topic = topic.split('\n')[0]  # Take first line only
+                # Build final topic
+                if topics and len(topics) > 10:
+                    return f"{doc_title} {doc_number}: {topics}"[:300]
+                else:
+                    # LLM didn't return useful content, just use metadata
+                    return f"{doc_title} {doc_number}"
 
-            # If LLM failed to include metadata, add it
-            if doc_metadata.get('doc_number') and doc_metadata['doc_number'] not in topic:
-                topic = f"{doc_metadata.get('doc_title', 'Policy')} {doc_metadata['doc_number']}: {topic}"
+            except Exception as e:
+                logger.error(f"Topic generation failed: {e}")
+                return f"{doc_title} {doc_number}"
 
-            return topic[:300]  # Increased limit for more detailed topics
-        except Exception as e:
-            logger.error(f"Failed to generate topic: {e}")
-            # Fallback: construct from metadata
-            fallback = doc_metadata.get('doc_title', 'Document')
-            if doc_metadata.get('doc_number'):
-                fallback += f" {doc_metadata['doc_number']}"
-            return fallback[:200]
+        # Fallback for documents without metadata
+        return doc_metadata.get('doc_title', 'Policy Document')
 
     def generate_answer_with_citations(
         self,
