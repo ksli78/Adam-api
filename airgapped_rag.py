@@ -83,6 +83,7 @@ class QueryRequest(BaseModel):
     """Request model for querying the RAG system."""
     prompt: str = Field(..., description="The user's question")
     top_k: Optional[int] = Field(default=1, description="Number of documents to retrieve (1-5)")
+    rewrite_query: Optional[bool] = Field(default=True, description="Enable query rewriting for better retrieval")
 
 class QueryResponse(BaseModel):
     """Response model with answer and citations."""
@@ -381,6 +382,53 @@ class OllamaClient:
         logger.info(f"Ollama client initialized: {base_url}")
         logger.info(f"  Embedding model: {embed_model}")
         logger.info(f"  LLM model: {llm_model}")
+
+    def rewrite_query(self, query: str) -> str:
+        """
+        Rewrite a vague or short query to be more specific and better for retrieval.
+
+        Examples:
+        - "PTO Policy" → "What is the company policy for Paid Time Off (PTO)?"
+        - "telecommuting" → "What are the company policies and procedures for telecommuting and remote work?"
+        """
+        # If query is already detailed (>50 chars with multiple words), don't rewrite
+        if len(query) > 50 and len(query.split()) > 7:
+            logger.info("Query is detailed enough, skipping rewrite")
+            return query
+
+        prompt = f"""You are helping to improve a search query for a corporate policy document database.
+
+Original Query: "{query}"
+
+Rewrite this query to be more specific and better for retrieving relevant policy documents.
+
+Guidelines:
+1. Expand abbreviations (e.g., "PTO" → "Paid Time Off")
+2. Add context about what kind of information is needed
+3. Frame as a clear question if it's not already
+4. Keep it concise (under 100 words)
+5. Focus on the core topic
+
+Rewritten Query:"""
+
+        try:
+            response = ollama.generate(
+                model=self.llm_model,
+                prompt=prompt,
+                options={
+                    'temperature': 0.3,
+                    'num_predict': 80
+                }
+            )
+            rewritten = response['response'].strip()
+            # Clean up any quotes
+            rewritten = rewritten.strip('"\'')
+
+            logger.info(f"Query rewrite: '{query}' → '{rewritten}'")
+            return rewritten
+        except Exception as e:
+            logger.warning(f"Query rewriting failed: {e}, using original")
+            return query
 
     def generate_embedding(self, text: str) -> List[float]:
         """Generate embedding for text using Ollama."""
@@ -863,9 +911,15 @@ async def query(request: QueryRequest):
 
         logger.info(f"Processing query: {question}")
 
-        # Generate embedding for question
+        # Optionally rewrite query for better retrieval
+        search_query = question
+        if request.rewrite_query:
+            logger.info("Rewriting query for better retrieval...")
+            search_query = ollama_client.rewrite_query(question)
+
+        # Generate embedding for question (use rewritten version for search)
         logger.info("Generating query embedding...")
-        query_embedding = ollama_client.generate_embedding(question)
+        query_embedding = ollama_client.generate_embedding(search_query)
 
         # Search for similar document topics
         logger.info(f"Searching for top {top_k} similar documents...")
