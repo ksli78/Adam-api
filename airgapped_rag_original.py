@@ -105,54 +105,6 @@ class DocumentInfo(BaseModel):
     created_at: str
     char_count: int
 
-# -------------------- Document Metadata Extraction --------------------
-
-def extract_document_metadata(content: str) -> Dict[str, str]:
-    """
-    Extract metadata from document content.
-
-    Tries to find:
-    - Document number (e.g., EN-PO-0071)
-    - Document title
-    - Key terms
-    """
-    metadata = {
-        'doc_number': '',
-        'doc_title': '',
-        'key_terms': ''
-    }
-
-    # Get first 2000 chars for metadata extraction
-    sample = content[:2000]
-    lines = sample.split('\n')
-
-    # Try to find document number (common patterns)
-    doc_number_patterns = [
-        r'Document\s+No[.:]?\s*([A-Z]{2}-[A-Z]{2}-\d{4})',  # EN-PO-0071
-        r'Doc\s+#?\s*:?\s*([A-Z]{2}-[A-Z]{2}-\d{4})',
-        r'([A-Z]{2}-[A-Z]{2}-\d{4})'  # Just the number
-    ]
-
-    for pattern in doc_number_patterns:
-        match = re.search(pattern, sample, re.IGNORECASE)
-        if match:
-            metadata['doc_number'] = match.group(1)
-            break
-
-    # Try to find title (usually after document number or near top)
-    # Look for lines that look like titles (5-60 chars, capitalized)
-    for i, line in enumerate(lines[:30]):  # Check first 30 lines
-        line = line.strip()
-        if 5 < len(line) < 60 and not line.startswith('Page') and line[0].isupper():
-            # Skip if it's just boilerplate
-            if 'proprietary' not in line.lower() and 'copyright' not in line.lower():
-                # Check if it looks like a title
-                if line.count(' ') >= 1 and line.count(' ') <= 8:
-                    metadata['doc_title'] = line
-                    break
-
-    return metadata
-
 # -------------------- PDF to Markdown Conversion --------------------
 
 def pdf_to_markdown(pdf_path: str) -> str:
@@ -314,32 +266,18 @@ class VectorStore:
         doc_id: str,
         topic_embedding: List[float],
         source_url: str,
-        topic: str,
-        doc_metadata: Optional[Dict[str, str]] = None
+        topic: str
     ) -> None:
         """Add a document's topic embedding to the collection."""
-        # Build rich metadata for better search
-        metadata = {
-            'source_url': source_url,
-            'topic': topic
-        }
-
-        # Add document metadata if provided
-        if doc_metadata:
-            if doc_metadata.get('doc_number'):
-                metadata['doc_number'] = doc_metadata['doc_number']
-            if doc_metadata.get('doc_title'):
-                metadata['doc_title'] = doc_metadata['doc_title']
-
         self.collection.add(
             ids=[doc_id],
             embeddings=[topic_embedding],
-            metadatas=[metadata]
+            metadatas=[{
+                'source_url': source_url,
+                'topic': topic
+            }]
         )
         logger.info(f"Added topic embedding for document {doc_id}")
-        if doc_metadata and doc_metadata.get('doc_number'):
-            logger.info(f"  Document number: {doc_metadata['doc_number']}")
-            logger.info(f"  Document title: {doc_metadata.get('doc_title', 'N/A')}")
 
     def search(
         self,
@@ -397,67 +335,40 @@ class OllamaClient:
                 detail=f"Embedding generation failed: {str(e)}"
             )
 
-    def generate_topic(self, content: str, doc_metadata: Dict[str, str], max_chars: int = 3000) -> str:
+    def generate_topic(self, content: str, max_chars: int = 3000) -> str:
         """
-        Generate a rich, searchable topic/summary for a document.
-        Uses document metadata and content.
+        Generate a concise topic/summary for a document.
+        Uses the first portion of the document.
         """
         # Use first portion for topic generation
         sample = content[:max_chars]
 
-        # Build context from metadata
-        metadata_context = ""
-        if doc_metadata.get('doc_number'):
-            metadata_context += f"Document Number: {doc_metadata['doc_number']}\n"
-        if doc_metadata.get('doc_title'):
-            metadata_context += f"Document Title: {doc_metadata['doc_title']}\n"
+        prompt = f"""Read the following document excerpt and generate a concise, descriptive title or topic summary (10-15 words maximum) that captures the main subject:
 
-        prompt = f"""You are analyzing a corporate policy document. Create a searchable description that will help find this document when users ask questions.
-
-{metadata_context}
-
-Document Content (first portion):
+Document Excerpt:
 {sample}
 
-Create a comprehensive searchable description using this format:
-"[Document Title] [Document Number]: [Main Topic] - [Key Details and Terms]"
-
-Include:
-- The document title and number
-- Main policy topic
-- Key terms that users might search for
-- Important concepts covered
-
-Keep it under 200 characters but make it specific and searchable.
-
-Searchable Description:"""
+Topic/Title:"""
 
         try:
             response = ollama.generate(
                 model=self.llm_model,
                 prompt=prompt,
                 options={
-                    'temperature': 0.2,
-                    'num_predict': 100
+                    'temperature': 0.3,
+                    'num_predict': 50
                 }
             )
             topic = response['response'].strip()
             # Clean up the topic
-            topic = re.sub(r'^(Topic:|Title:|Summary:|Description:)\s*', '', topic, flags=re.IGNORECASE)
+            topic = re.sub(r'^(Topic:|Title:|Summary:)\s*', '', topic, flags=re.IGNORECASE)
             topic = topic.split('\n')[0]  # Take first line only
-
-            # If LLM failed to include metadata, add it
-            if doc_metadata.get('doc_number') and doc_metadata['doc_number'] not in topic:
-                topic = f"{doc_metadata.get('doc_title', 'Policy')} {doc_metadata['doc_number']}: {topic}"
-
-            return topic[:300]  # Increased limit for more detailed topics
+            return topic[:200]  # Limit length
         except Exception as e:
             logger.error(f"Failed to generate topic: {e}")
-            # Fallback: construct from metadata
-            fallback = doc_metadata.get('doc_title', 'Document')
-            if doc_metadata.get('doc_number'):
-                fallback += f" {doc_metadata['doc_number']}"
-            return fallback[:200]
+            # Fallback: use first line
+            lines = content.strip().split('\n')
+            return lines[0][:200] if lines else "Untitled Document"
 
     def generate_answer_with_citations(
         self,
@@ -552,71 +463,32 @@ Your Answer (with inline citations):"""
         # Pattern 2: If no explicit citations found, extract key sentences
         # and match them to documents
         if not citations:
-            # For each document, find relevant content excerpt
+            # Extract meaningful sentences from the answer
+            sentences = re.split(r'[.!?]+', answer)
+            sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
+
+            # For each document, find best matching excerpt
             for doc_idx, doc in enumerate(documents):
                 content = doc.get('content', '')
                 source_url = doc.get('source_url', 'Unknown')
 
-                # Skip boilerplate headers (first 500 chars often contain legal text)
-                # Look for numbered sections or substantial paragraphs
-                excerpt = self._extract_relevant_excerpt(content)
+                # Find a good excerpt (first substantial paragraph)
+                paragraphs = [p.strip() for p in content.split('\n\n') if len(p.strip()) > 50]
+                if paragraphs:
+                    # Take first meaningful paragraph as excerpt
+                    excerpt = paragraphs[0][:300]
+                    # If too long, try to end at sentence boundary
+                    if len(paragraphs[0]) > 300:
+                        last_period = excerpt.rfind('.')
+                        if last_period > 200:
+                            excerpt = excerpt[:last_period + 1]
 
-                if excerpt:
                     citations.append(Citation(
                         source_url=source_url,
-                        excerpt=excerpt
+                        excerpt=excerpt + "..."
                     ))
 
         return citations
-
-    def _extract_relevant_excerpt(self, content: str, max_length: int = 300) -> str:
-        """
-        Extract a relevant excerpt from document content, skipping boilerplate.
-
-        Tries to find:
-        1. Numbered policy sections (5.0, 5.1, etc.)
-        2. Substantial paragraphs after skipping headers
-        3. Content with definitions or procedures
-        """
-        # Skip first 500 chars (usually headers/copyright)
-        if len(content) > 500:
-            content_sample = content[500:]
-        else:
-            content_sample = content
-
-        # Try to find numbered sections (e.g., "5.1 General" or "1.0 Purpose")
-        section_pattern = r'(\d+\.\d+\s+[A-Z][^\n]+(?:\n[^\n]+){1,3})'
-        section_matches = re.findall(section_pattern, content_sample[:3000])
-
-        if section_matches:
-            # Use first significant section
-            excerpt = section_matches[0].strip()
-            if len(excerpt) > max_length:
-                excerpt = excerpt[:max_length]
-                # Try to end at sentence
-                last_period = excerpt.rfind('.')
-                if last_period > max_length * 0.7:
-                    excerpt = excerpt[:last_period + 1]
-            return excerpt + "..."
-
-        # Fallback: Find substantial paragraphs
-        paragraphs = [p.strip() for p in content_sample.split('\n\n') if len(p.strip()) > 100]
-
-        # Skip paragraphs that are mostly boilerplate
-        boilerplate_terms = ['proprietary', 'copyright', 'uncontrolled', 'permission']
-
-        for para in paragraphs[:5]:  # Check first 5 paragraphs
-            # Check if it's not boilerplate
-            if not any(term in para.lower() for term in boilerplate_terms):
-                excerpt = para[:max_length]
-                if len(para) > max_length:
-                    last_period = excerpt.rfind('.')
-                    if last_period > max_length * 0.7:
-                        excerpt = excerpt[:last_period + 1]
-                return excerpt + "..."
-
-        # Last resort: just take from content
-        return content_sample[:max_length] + "..."
 
 # -------------------- Initialize Components --------------------
 
@@ -695,14 +567,9 @@ async def upload_document(
         # Clean up temp file
         temp_pdf.unlink()
 
-        # Extract document metadata
-        logger.info("Extracting document metadata...")
-        doc_metadata = extract_document_metadata(markdown_content)
-        logger.info(f"Extracted metadata: {doc_metadata}")
-
-        # Generate topic/summary using metadata
+        # Generate topic/summary
         logger.info("Generating topic summary...")
-        topic = ollama_client.generate_topic(markdown_content, doc_metadata)
+        topic = ollama_client.generate_topic(markdown_content)
         logger.info(f"Generated topic: {topic}")
 
         # Generate embedding for the topic
@@ -718,13 +585,12 @@ async def upload_document(
             topic=topic
         )
 
-        # Store topic embedding in vector store with metadata
+        # Store topic embedding in vector store
         vector_store.add_document(
             doc_id=doc_id,
             topic_embedding=topic_embedding,
             source_url=source_url,
-            topic=topic,
-            doc_metadata=doc_metadata
+            topic=topic
         )
 
         return UploadResponse(
