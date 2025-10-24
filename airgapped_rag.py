@@ -445,67 +445,81 @@ Rewritten Query:"""
                 detail=f"Embedding generation failed: {str(e)}"
             )
 
-    def generate_topic(self, content: str, doc_metadata: Dict[str, str], max_chars: int = 3000) -> str:
+    def generate_topic(self, content: str, doc_metadata: Dict[str, str], max_chars: int = 5000) -> str:
         """
         Generate a rich, searchable topic/summary for a document.
-        Uses document metadata and content.
+        Extracts topics directly from document structure instead of using LLM.
         """
-        # Use first portion for topic generation
-        sample = content[:max_chars]
-
-        # Build context from metadata
-        metadata_context = ""
-        if doc_metadata.get('doc_number'):
-            metadata_context += f"Document Number: {doc_metadata['doc_number']}\n"
-        if doc_metadata.get('doc_title'):
-            metadata_context += f"Document Title: {doc_metadata['doc_title']}\n"
-
-        # Build base from metadata
         doc_number = doc_metadata.get('doc_number', '')
         doc_title = doc_metadata.get('doc_title', '')
 
-        # If we have metadata, just extract key topics from content
-        if doc_number and doc_title:
-            prompt = f"""Read this policy document and list the main topics it covers.
+        # Extract topics from document structure
+        topics = self._extract_topics_from_content(content[:max_chars])
 
-Document: {doc_title} ({doc_number})
-
-Content excerpt:
-{sample}
-
-List key topics and terms covered (one line, comma-separated):"""
-
-            try:
-                response = ollama.generate(
-                    model=self.llm_model,
-                    prompt=prompt,
-                    options={
-                        'temperature': 0.2,
-                        'num_predict': 60
-                    }
-                )
-                topics = response['response'].strip()
-
-                # Clean up common prefixes and get first line
-                topics = re.sub(r'^(Topics?:|Key topics?:|Terms?:|Here (is|are)|This (document|policy) covers?:)\s*', '', topics, flags=re.IGNORECASE)
-                topics = topics.split('\n')[0].strip()
-
-                # Remove quotes if present
-                topics = topics.strip('"\'')
-
-                # Build final topic
-                if topics and len(topics) > 10:
-                    return f"{doc_title} {doc_number}: {topics}"[:300]
-                else:
-                    # LLM didn't return useful content, just use metadata
-                    return f"{doc_title} {doc_number}"
-
-            except Exception as e:
-                logger.error(f"Topic generation failed: {e}")
+        # Build final topic string
+        if doc_title and doc_number:
+            if topics:
+                return f"{doc_title} {doc_number}: {topics}"[:300]
+            else:
                 return f"{doc_title} {doc_number}"
+        elif doc_title:
+            return doc_title
+        else:
+            return "Policy Document"
 
-        # Fallback for documents without metadata
-        return doc_metadata.get('doc_title', 'Policy Document')
+    def _extract_topics_from_content(self, content: str) -> str:
+        """
+        Extract key topics directly from document content structure.
+
+        Looks for:
+        1. Section headings (5.0, 5.1, etc.)
+        2. Purpose section
+        3. Definitions section
+        """
+        topics = []
+
+        # Find Purpose section (usually has key info)
+        purpose_match = re.search(r'1\.0\s+Purpose\s*\n(.+?)(?=\n\d+\.0|\Z)', content, re.DOTALL | re.IGNORECASE)
+        if purpose_match:
+            purpose_text = purpose_match.group(1).strip()
+            # Extract key phrases (after "to" or "for")
+            key_phrases = re.findall(r'(?:to|for)\s+([^.]+)', purpose_text, re.IGNORECASE)
+            if key_phrases:
+                # Clean and add first phrase
+                phrase = key_phrases[0].strip().lower()
+                phrase = re.sub(r'\s+', ' ', phrase)  # Normalize whitespace
+                if len(phrase) < 100:
+                    topics.append(phrase)
+
+        # Find section headings (main topics)
+        section_headings = re.findall(r'\d+\.0\s+([A-Z][^\n]+)', content)
+        for heading in section_headings[1:6]:  # Skip first (Purpose), take next 4-5
+            heading = heading.strip().lower()
+            if heading and len(heading) < 50:
+                # Convert to singular if plural, remove generic words
+                heading = re.sub(r'(ies|s)$', '', heading)
+                if heading not in ['scope', 'applicable and reference document', 'definition']:
+                    topics.append(heading)
+
+        # Find definitions (key terms)
+        definitions = re.findall(r'\d+\.\d+\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*—', content)
+        for term in definitions[:5]:  # First 5 defined terms
+            term = term.strip().lower()
+            if term and len(term) < 30:
+                topics.append(term)
+
+        # Deduplicate and join
+        unique_topics = []
+        seen = set()
+        for topic in topics:
+            topic_lower = topic.lower()
+            if topic_lower not in seen and len(topic) > 3:
+                unique_topics.append(topic)
+                seen.add(topic_lower)
+                if len(unique_topics) >= 5:  # Max 5 topics
+                    break
+
+        return ', '.join(unique_topics) if unique_topics else ''
 
     def generate_answer_with_citations(
         self,
