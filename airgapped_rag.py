@@ -466,37 +466,45 @@ Searchable Description:"""
     ) -> Tuple[str, List[Citation]]:
         """
         Generate an answer using retrieved documents and extract citations.
+        Only includes relevant citations that are actually used.
         """
-        # Build context from full documents
+        # Build context from full documents with clear labeling
         context_parts = []
         for i, doc in enumerate(documents, 1):
             source_url = doc.get('source_url', 'Unknown')
             content = doc.get('content', '')
+            # Extract first 1000 chars to get document title/number
+            header = content[:1000]
+
             context_parts.append(
-                f"[Document {i} - Source: {source_url}]\n{content}\n"
+                f"=== DOCUMENT {i} ===\n"
+                f"Source: {source_url}\n"
+                f"Content:\n{content}\n"
             )
 
         context = "\n---\n".join(context_parts)
 
-        # System instruction emphasizing citations
-        system_instruction = """You are an expert assistant. Answer the user's question ONLY using the provided documents as context.
+        # Improved system instruction
+        system_instruction = """You are a precise policy assistant. Answer ONLY using the provided documents.
 
-CRITICAL REQUIREMENTS:
-1. For EVERY piece of information in your answer, you MUST identify which document it came from
-2. Include direct quotes (excerpts) from the source documents to support your statements
-3. Format citations as: [Document N: "exact quote from document"]
-4. If information appears in multiple documents, cite all relevant sources
-5. Do NOT make up information not present in the documents
-6. If the documents don't contain enough information to answer, say so clearly"""
+INSTRUCTIONS:
+1. Read ALL documents carefully
+2. Identify which document(s) answer the question
+3. Extract the SPECIFIC information that answers the question
+4. Cite ONLY the documents you actually use
+5. Use this format: "According to Document N, [information]"
+6. Include brief quotes when helpful
+7. If NO document answers the question, say "The provided documents do not contain information about [topic]"
+
+IMPORTANT: Only cite documents that directly answer the question. Don't mention documents that aren't relevant."""
 
         prompt = f"""{system_instruction}
 
-Documents:
 {context}
 
 User Question: {question}
 
-Your Answer (with inline citations):"""
+Answer (cite only relevant documents):"""
 
         try:
             response = ollama.generate(
@@ -504,13 +512,13 @@ Your Answer (with inline citations):"""
                 prompt=prompt,
                 options={
                     'temperature': 0.1,
-                    'num_predict': 500
+                    'num_predict': 400
                 }
             )
             answer = response['response'].strip()
 
-            # Extract citations from the answer
-            citations = self._extract_citations(answer, documents)
+            # Extract citations - only from documents actually mentioned
+            citations = self._extract_relevant_citations(answer, documents, question)
 
             return answer, citations
 
@@ -521,45 +529,67 @@ Your Answer (with inline citations):"""
                 detail=f"Answer generation failed: {str(e)}"
             )
 
-    def _extract_citations(
+    def _extract_relevant_citations(
         self,
         answer: str,
-        documents: List[Dict[str, Any]]
+        documents: List[Dict[str, Any]],
+        question: str
     ) -> List[Citation]:
         """
-        Extract citations from the generated answer.
+        Extract citations ONLY from documents actually mentioned in the answer.
 
-        Looks for patterns like [Document N: "quote"] or extracts
-        key sentences as excerpts.
+        Looks for:
+        1. "Document N" references in the answer
+        2. Extracts excerpts only from those documents
+        3. Does NOT include documents that weren't used
         """
         citations = []
 
-        # Pattern 1: Explicit citations [Document N: "quote"]
-        citation_pattern = r'\[Document (\d+): "([^"]+)"\]'
-        matches = re.findall(citation_pattern, answer)
+        # Find which documents are actually mentioned in the answer
+        mentioned_docs = set()
 
-        cited_docs = set()
-        for doc_num, excerpt in matches:
+        # Pattern: "Document N" or "Document #N"
+        doc_references = re.findall(r'Document\s+#?(\d+)', answer, re.IGNORECASE)
+        for doc_num in doc_references:
             doc_idx = int(doc_num) - 1
             if 0 <= doc_idx < len(documents):
-                doc = documents[doc_idx]
-                citations.append(Citation(
-                    source_url=doc.get('source_url', 'Unknown'),
-                    excerpt=excerpt
-                ))
-                cited_docs.add(doc_idx)
+                mentioned_docs.add(doc_idx)
 
-        # Pattern 2: If no explicit citations found, extract key sentences
-        # and match them to documents
-        if not citations:
-            # For each document, find relevant content excerpt
-            for doc_idx, doc in enumerate(documents):
+        # If no explicit document mentions, check if answer says "no information found"
+        no_info_patterns = [
+            r'do(?:es)?\s+not\s+contain',
+            r'no\s+information',
+            r'not\s+found',
+            r'does(?:n\'t)?\s+address'
+        ]
+
+        answer_lower = answer.lower()
+        if any(re.search(pattern, answer_lower) for pattern in no_info_patterns):
+            # Answer says no relevant info found - return empty citations
+            logger.info("Answer indicates no relevant information found")
+            return []
+
+        # If no documents mentioned explicitly, try to infer from answer content
+        if not mentioned_docs:
+            # Check if answer contains specific information (not just "no info")
+            if len(answer) > 50 and not any(phrase in answer_lower for phrase in ['not found', 'no information', 'do not contain']):
+                # Answer has content but no explicit citations
+                # Use the first document as it's likely most relevant (highest score)
+                mentioned_docs.add(0)
+                logger.info("No explicit citations found, using first (most relevant) document")
+            else:
+                # Answer is vague or says no info - don't add citations
+                return []
+
+        # Extract relevant excerpts only from mentioned documents
+        for doc_idx in sorted(mentioned_docs):
+            if doc_idx < len(documents):
+                doc = documents[doc_idx]
                 content = doc.get('content', '')
                 source_url = doc.get('source_url', 'Unknown')
 
-                # Skip boilerplate headers (first 500 chars often contain legal text)
-                # Look for numbered sections or substantial paragraphs
-                excerpt = self._extract_relevant_excerpt(content)
+                # Find most relevant excerpt from this document
+                excerpt = self._find_best_excerpt(content, question, answer)
 
                 if excerpt:
                     citations.append(Citation(
@@ -567,7 +597,78 @@ Your Answer (with inline citations):"""
                         excerpt=excerpt
                     ))
 
+        logger.info(f"Extracted {len(citations)} citations from {len(mentioned_docs)} mentioned documents")
         return citations
+
+    def _extract_citations(
+        self,
+        answer: str,
+        documents: List[Dict[str, Any]]
+    ) -> List[Citation]:
+        """
+        OLD METHOD - kept for compatibility.
+        Use _extract_relevant_citations instead.
+        """
+        return self._extract_relevant_citations(answer, documents, "")
+
+    def _find_best_excerpt(self, content: str, question: str, answer: str, max_length: int = 350) -> str:
+        """
+        Find the most relevant excerpt from a document based on question and answer.
+
+        Tries to find sections that:
+        1. Contain key terms from the question
+        2. Relate to information in the answer
+        3. Are not boilerplate/headers
+        """
+        # Extract key terms from question (simple approach)
+        question_terms = set(re.findall(r'\b[A-Za-z]{4,}\b', question.lower()))
+        # Common stop words to ignore
+        stop_words = {'what', 'when', 'where', 'which', 'policy', 'company', 'does', 'have', 'about'}
+        question_terms = question_terms - stop_words
+
+        # Skip first 500 chars (headers)
+        if len(content) > 500:
+            content_sample = content[500:]
+        else:
+            content_sample = content
+
+        # Split into paragraphs
+        paragraphs = [p.strip() for p in content_sample.split('\n\n') if len(p.strip()) > 80]
+
+        # Score paragraphs by relevance
+        best_para = None
+        best_score = 0
+
+        boilerplate_terms = ['proprietary', 'copyright', 'uncontrolled', 'permission']
+
+        for para in paragraphs[:20]:  # Check first 20 paragraphs
+            # Skip boilerplate
+            if any(term in para.lower() for term in boilerplate_terms):
+                continue
+
+            # Count matching question terms
+            para_lower = para.lower()
+            score = sum(1 for term in question_terms if term in para_lower)
+
+            # Bonus for numbered sections (policy content)
+            if re.search(r'^\d+\.\d+\s', para):
+                score += 2
+
+            if score > best_score:
+                best_score = score
+                best_para = para
+
+        if best_para:
+            excerpt = best_para[:max_length]
+            if len(best_para) > max_length:
+                # Try to end at sentence boundary
+                last_period = excerpt.rfind('.')
+                if last_period > max_length * 0.6:
+                    excerpt = excerpt[:last_period + 1]
+            return excerpt + ("..." if len(best_para) > max_length else "")
+
+        # Fallback to _extract_relevant_excerpt
+        return self._extract_relevant_excerpt(content, max_length)
 
     def _extract_relevant_excerpt(self, content: str, max_length: int = 300) -> str:
         """
