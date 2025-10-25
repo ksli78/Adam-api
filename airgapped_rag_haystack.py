@@ -35,12 +35,14 @@ except ImportError:
 # Haystack
 from haystack import Pipeline, Document
 from haystack.components.embedders import SentenceTransformersDocumentEmbedder, SentenceTransformersTextEmbedder
-from haystack.components.retrievers import InMemoryEmbeddingRetriever, InMemoryBM25Retriever
 from haystack.components.rankers import TransformersSimilarityRanker
 from haystack.components.joiners import DocumentJoiner
 from haystack.components.writers import DocumentWriter
-from haystack.document_stores.in_memory import InMemoryDocumentStore
 from haystack.utils import ComponentDevice
+
+# ChromaDB document store (persistent)
+from haystack_integrations.document_stores.chroma import ChromaDocumentStore
+from haystack_integrations.components.retrievers.chroma import ChromaEmbeddingRetriever, ChromaQueryTextRetriever
 
 # Ollama (for generation)
 import ollama
@@ -50,6 +52,7 @@ import ollama
 # Paths
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data/airgapped_rag"))
 DOCS_DIR = DATA_DIR / "documents"
+CHROMA_DIR = DATA_DIR / "chromadb"  # ChromaDB persistence directory
 
 # Ollama Configuration
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -78,6 +81,7 @@ logger = logging.getLogger(__name__)
 def ensure_directories():
     """Create necessary directories if they don't exist."""
     DOCS_DIR.mkdir(parents=True, exist_ok=True)
+    CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 
 ensure_directories()
 
@@ -241,8 +245,13 @@ class HaystackRAG:
         """Initialize Haystack document store and pipelines."""
         logger.info("Initializing Haystack RAG system...")
 
-        # Document store (in-memory for both BM25 and embeddings)
-        self.document_store = InMemoryDocumentStore()
+        # ChromaDB document store (PERSISTENT - survives restarts!)
+        self.document_store = ChromaDocumentStore(
+            persist_path=str(CHROMA_DIR),
+            collection_name="documents"
+        )
+        logger.info(f"ChromaDB initialized at: {CHROMA_DIR}")
+        logger.info(f"Existing documents in store: {self.document_store.count_documents()}")
 
         # Embedder for documents (indexing)
         self.doc_embedder = SentenceTransformersDocumentEmbedder(
@@ -259,13 +268,14 @@ class HaystackRAG:
         )
         self.text_embedder.warm_up()
 
-        # Retrievers
-        self.embedding_retriever = InMemoryEmbeddingRetriever(
+        # Retrievers (ChromaDB-based)
+        self.embedding_retriever = ChromaEmbeddingRetriever(
             document_store=self.document_store,
             top_k=TOP_K_RETRIEVAL
         )
 
-        self.bm25_retriever = InMemoryBM25Retriever(
+        # For BM25/text-based retrieval, ChromaDB uses text queries
+        self.bm25_retriever = ChromaQueryTextRetriever(
             document_store=self.document_store,
             top_k=TOP_K_RETRIEVAL
         )
@@ -577,7 +587,8 @@ async def startup_event():
     logger.info("Air-Gapped RAG API (Haystack) Starting")
     logger.info("=" * 60)
     logger.info(f"Data directory: {DATA_DIR}")
-    logger.info(f"Document count: {len(haystack_rag.list_documents())}")
+    logger.info(f"ChromaDB directory: {CHROMA_DIR}")
+    logger.info(f"Document count: {len(haystack_rag.list_documents())} (PERSISTENT)")
     logger.info(f"Ollama base URL: {OLLAMA_BASE_URL}")
     logger.info(f"Embedding model: {EMBEDDING_MODEL}")
     logger.info(f"Reranker model: {RERANKER_MODEL}")
