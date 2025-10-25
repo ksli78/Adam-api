@@ -36,8 +36,12 @@ accelerate==0.34.2
 rapidfuzz==3.9.2
 rank_bm25==0.2.2
 
-# Air-gapped RAG with Ollama
+# Air-gapped RAG with Ollama and Haystack
 chromadb>=0.4.0
 ollama>=0.1.0
 pypdf>=3.0.0
 PyMuPDF>=1.23.0
+
+# Haystack for RAG pipelines
+haystack-ai>=2.0.0
+chroma-haystack>=0.18.0
