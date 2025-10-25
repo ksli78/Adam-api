@@ -385,50 +385,46 @@ class OllamaClient:
 
     def rewrite_query(self, query: str) -> str:
         """
-        Rewrite a vague or short query to be more specific and better for retrieval.
+        Expand query with related terms for better retrieval.
 
         Examples:
-        - "PTO Policy" → "What is the company policy for Paid Time Off (PTO)?"
-        - "telecommuting" → "What are the company policies and procedures for telecommuting and remote work?"
+        - "PTO Policy" → "Paid Time Off PTO vacation sick leave personal time policy"
+        - "telecommuting" → "telecommuting remote work work from home telework policy"
         """
         # If query is already detailed (>50 chars with multiple words), don't rewrite
         if len(query) > 50 and len(query.split()) > 7:
             logger.info("Query is detailed enough, skipping rewrite")
             return query
 
-        prompt = f"""You are helping to improve a search query for a corporate policy document database.
+        query_lower = query.lower()
 
-Original Query: "{query}"
+        # Expand common abbreviations and add related terms
+        expansions = {
+            'pto': 'Paid Time Off PTO vacation sick leave personal time',
+            'fmla': 'FMLA Family Medical Leave Act medical leave family leave',
+            'wfh': 'work from home WFH remote work telecommuting telework',
+            'hr': 'Human Resources HR personnel employee relations',
+            'eeo': 'EEO Equal Employment Opportunity discrimination diversity',
+            'ada': 'ADA Americans with Disabilities Act disability accommodation',
+            'telecommut': 'telecommuting remote work work from home telework hybrid work',
+            'leave': 'leave absence time off PTO vacation',
+            'benefit': 'benefits compensation perks insurance health',
+            'hire': 'hiring recruitment onboarding employment',
+            'work hours': 'work hours schedule shift overtime time tracking'
+        }
 
-Rewrite this query to be more specific and better for retrieving relevant policy documents.
+        # Check for matches and expand
+        rewritten = query
+        for key, expansion in expansions.items():
+            if key in query_lower:
+                # Add expansion terms to query
+                rewritten = f"{expansion} {query}"
+                logger.info(f"Query expansion: '{query}' → '{rewritten[:80]}...'")
+                return rewritten
 
-Guidelines:
-1. Expand abbreviations (e.g., "PTO" → "Paid Time Off")
-2. Add context about what kind of information is needed
-3. Frame as a clear question if it's not already
-4. Keep it concise (under 100 words)
-5. Focus on the core topic
-
-Rewritten Query:"""
-
-        try:
-            response = ollama.generate(
-                model=self.llm_model,
-                prompt=prompt,
-                options={
-                    'temperature': 0.3,
-                    'num_predict': 80
-                }
-            )
-            rewritten = response['response'].strip()
-            # Clean up any quotes
-            rewritten = rewritten.strip('"\'')
-
-            logger.info(f"Query rewrite: '{query}' → '{rewritten}'")
-            return rewritten
-        except Exception as e:
-            logger.warning(f"Query rewriting failed: {e}, using original")
-            return query
+        # No expansion found, return original
+        logger.info(f"No expansion applied to query: '{query}'")
+        return query
 
     def generate_embedding(self, text: str) -> List[float]:
         """Generate embedding for text using Ollama."""
@@ -1114,6 +1110,58 @@ async def list_documents():
         return [DocumentInfo(**doc) for doc in docs]
     except Exception as e:
         logger.error(f"Error listing documents: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/debug-search")
+async def debug_search(request: QueryRequest):
+    """
+    Debug endpoint to show similarity scores and document matching.
+    Helps diagnose why certain documents are (or aren't) being retrieved.
+    """
+    try:
+        question = request.prompt.strip()
+        top_k = max(1, min(request.top_k or 5, 10))
+
+        # Optionally rewrite query
+        search_query = question
+        if request.rewrite_query:
+            search_query = ollama_client.rewrite_query(question)
+
+        # Generate embedding
+        query_embedding = ollama_client.generate_embedding(search_query)
+
+        # Search with higher top_k to see all candidates
+        search_results = vector_store.search(query_embedding, top_k=10)
+
+        # Get all documents with their scores
+        debug_info = {
+            "original_query": question,
+            "search_query": search_query,
+            "results": []
+        }
+
+        if search_results['ids'][0]:
+            doc_ids = search_results['ids'][0]
+            distances = search_results['distances'][0] if 'distances' in search_results else [0] * len(doc_ids)
+            metadatas = search_results['metadatas'][0] if 'metadatas' in search_results else [{}] * len(doc_ids)
+
+            for doc_id, distance, metadata in zip(doc_ids, distances, metadatas):
+                doc = doc_store.get_document(doc_id)
+                if doc:
+                    debug_info["results"].append({
+                        "doc_id": doc_id,
+                        "doc_number": metadata.get('doc_number', 'N/A'),
+                        "doc_title": metadata.get('doc_title', 'N/A'),
+                        "topic": metadata.get('topic', 'N/A'),
+                        "distance": distance,
+                        "similarity": 1 - distance,  # Convert distance to similarity
+                        "source_url": metadata.get('source_url', 'N/A')
+                    })
+
+        return debug_info
+
+    except Exception as e:
+        logger.error(f"Debug search error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/documents/{document_id}")
