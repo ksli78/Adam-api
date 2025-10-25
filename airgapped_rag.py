@@ -578,6 +578,7 @@ class OllamaClient:
 
         # Take top 5 most frequent acronyms
         top_acronyms = sorted(acronym_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+        logger.info(f"Top acronyms found: {top_acronyms}")
 
         # Add acronyms to topics with their expansions
         for acr, count in top_acronyms:
@@ -590,10 +591,13 @@ class OllamaClient:
                 expansion = re.sub(r'\s+', ' ', expansion).strip()
                 if len(expansion) < 50:
                     topics.append(f"{acr.lower()} ({expansion})")
+                    logger.info(f"  Added acronym with expansion: {acr} ({expansion})")
                 else:
                     topics.append(acr.lower())
+                    logger.info(f"  Added acronym (expansion too long): {acr}")
             else:
                 topics.append(acr.lower())
+                logger.info(f"  Added acronym (no expansion found): {acr}")
 
         # Find Purpose section (usually has key info)
         purpose_match = re.search(r'1\.0\s+Purpose\s*\n(.+?)(?=\n\d+\.0|\Z)', content, re.DOTALL | re.IGNORECASE)
@@ -626,14 +630,19 @@ class OllamaClient:
 
         # Process subsection headings (like "4.3 Paid Time Off")
         # These often contain specific policy details
+        logger.info(f"Found {len(sub_headings)} subsection headings")
         if sub_headings:
-            for section_num, subsection_num, heading in sub_headings[:10]:  # Take first 10 subsections
+            policy_subsections = []
+            for section_num, subsection_num, heading in sub_headings[:20]:  # Take first 20 subsections
                 heading = heading.strip().lower()
                 if heading and len(heading) < 60:
                     # Look for policy-related terms
                     if any(keyword in heading for keyword in ['time off', 'pto', 'leave', 'vacation', 'sick', 'holiday',
                                                               'benefit', 'compensation', 'overtime', 'schedule', 'hour']):
                         topics.append(heading)
+                        policy_subsections.append(f"{section_num}.{subsection_num} {heading}")
+            if policy_subsections:
+                logger.info(f"Policy-related subsections: {policy_subsections}")
 
         # Find definitions (key terms)
         definitions = re.findall(r'\d+\.\d+\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\s*—', content)
@@ -1215,6 +1224,28 @@ async def debug_search(request: QueryRequest):
 
     except Exception as e:
         logger.error(f"Debug search error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/documents/{document_id}/content")
+async def get_document_content(document_id: str):
+    """Get the raw markdown content of a document for debugging."""
+    try:
+        doc = doc_store.get_document(document_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        # Return content with metadata
+        return {
+            "document_id": document_id,
+            "filename": doc.get('filename', 'Unknown'),
+            "source_url": doc.get('source_url', 'Unknown'),
+            "content_length": len(doc.get('content', '')),
+            "content": doc.get('content', '')
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting document content: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/documents/{document_id}")
