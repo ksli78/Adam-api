@@ -108,7 +108,7 @@ docker exec ollama ollama list | grep llama3
 ```bash
 # 1. Install Python dependencies
 pip install -r requirements.txt
-python -c "import nltk; nltk.download('punkt')"
+python -c "import nltk; nltk.download('punkt_tab')"
 
 # 2. Install system dependencies (Windows)
 choco install poppler tesseract
@@ -200,7 +200,7 @@ For **local Windows development** without Docker:
 5. **Install Python dependencies**
    ```powershell
    pip install -r requirements.txt
-   python -c "import nltk; nltk.download('punkt')"
+   python -c "import nltk; nltk.download('punkt_tab')"
    ```
 
 6. **Run the API**

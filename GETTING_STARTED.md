@@ -18,7 +18,7 @@ Quick start guide for your specific setup (Ollama already running separately).
 pip install -r requirements.txt
 
 # Download NLTK data
-python -c "import nltk; nltk.download('punkt')"
+python -c "import nltk; nltk.download('punkt_tab')"
 
 # System dependencies (Windows - optional for now)
 # choco install poppler tesseract

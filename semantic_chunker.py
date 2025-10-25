@@ -16,10 +16,15 @@ from dataclasses import dataclass, field
 import nltk
 
 # Download NLTK data if not present
+# Newer NLTK versions use punkt_tab instead of punkt
 try:
-    nltk.data.find('tokenizers/punkt')
+    nltk.data.find('tokenizers/punkt_tab')
 except LookupError:
-    nltk.download('punkt', quiet=True)
+    try:
+        nltk.download('punkt_tab', quiet=True)
+    except:
+        # Fallback for older NLTK versions
+        nltk.download('punkt', quiet=True)
 
 from nltk.tokenize import sent_tokenize
 

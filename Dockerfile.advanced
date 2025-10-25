@@ -19,7 +19,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Download NLTK data
-RUN python -c "import nltk; nltk.download('punkt', quiet=True)"
+# Use punkt_tab for newer NLTK versions (3.9+)
+RUN python -c "import nltk; nltk.download('punkt_tab', quiet=True)"
 
 # Copy application code
 COPY airgapped_rag_advanced.py .

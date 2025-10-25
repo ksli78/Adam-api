@@ -104,7 +104,7 @@ brew install poppler tesseract
 pip install -r requirements.txt
 
 # Download NLTK data
-python -c "import nltk; nltk.download('punkt')"
+python -c "import nltk; nltk.download('punkt_tab')"
 ```
 
 ### Start Ollama
