@@ -582,12 +582,28 @@ class OllamaClient:
 
         # Add acronyms to topics with their expansions
         for acr, count in top_acronyms:
-            # Try to find expansion (e.g., "PTO (Paid Time Off)") - search entire doc
-            expansion_pattern = rf'{acr}\s*\(([^)]+)\)'
-            expansion_match = re.search(expansion_pattern, content)
-            if expansion_match:
-                expansion = expansion_match.group(1).lower()
-                # Clean expansion
+            # Try to find expansion in multiple formats:
+            # 1. Parentheses: "PTO (Paid Time Off)"
+            # 2. Em dash definition: "PTO—PTO is a paid time off program"
+            # 3. En dash: "PTO – Paid Time Off"
+
+            expansion = None
+
+            # Try parentheses format
+            paren_pattern = rf'{acr}\s*\(([^)]+)\)'
+            paren_match = re.search(paren_pattern, content)
+            if paren_match:
+                expansion = paren_match.group(1).lower()
+            else:
+                # Try em dash or en dash definition format
+                # Example: "PTO—PTO is a paid time off program"
+                dash_pattern = rf'{acr}\s*[—–-]\s*(?:{acr}\s+is\s+)?(?:a\s+)?([a-z\s]+(?:program|policy|system|leave|time|off))'
+                dash_match = re.search(dash_pattern, content, re.IGNORECASE)
+                if dash_match:
+                    expansion = dash_match.group(1).strip().lower()
+
+            # Add to topics
+            if expansion:
                 expansion = re.sub(r'\s+', ' ', expansion).strip()
                 if len(expansion) < 50:
                     topics.append(f"{acr.lower()} ({expansion})")
@@ -614,9 +630,9 @@ class OllamaClient:
 
         # Find ALL section headings (including subsections like 4.3, 5.4)
         # Main sections: 1.0, 2.0, 3.0, etc.
-        main_headings = re.findall(r'(\d+)\.0\s+([A-Z][^\n]{3,60})', content)
-        # Subsections: 4.3, 5.4, etc.
-        sub_headings = re.findall(r'(\d+)\.(\d+)\s+([A-Z][^\n]{3,60})', content)
+        main_headings = re.findall(r'(\d+)\.0\s+([A-Z][^\n]{2,80})', content)
+        # Subsections: 4.3, 5.4, etc. - allow shorter headings (min 2 chars) and longer (80)
+        sub_headings = re.findall(r'(\d+)\.(\d+)\s+([A-Z][^\n]{2,80})', content)
 
         # Process main section headings
         if main_headings:
@@ -628,21 +644,34 @@ class OllamaClient:
                     if not any(skip_term in heading for skip_term in skip_terms):
                         topics.append(heading)
 
-        # Process subsection headings (like "4.3 Paid Time Off")
+        # Process subsection headings (like "4.3 Paid Time Off" or "4.3 PTO")
         # These often contain specific policy details
         logger.info(f"Found {len(sub_headings)} subsection headings")
         if sub_headings:
             policy_subsections = []
-            for section_num, subsection_num, heading in sub_headings[:20]:  # Take first 20 subsections
+            for section_num, subsection_num, heading in sub_headings[:30]:  # Take first 30 subsections
+                heading_orig = heading
                 heading = heading.strip().lower()
-                if heading and len(heading) < 60:
-                    # Look for policy-related terms
-                    if any(keyword in heading for keyword in ['time off', 'pto', 'leave', 'vacation', 'sick', 'holiday',
-                                                              'benefit', 'compensation', 'overtime', 'schedule', 'hour']):
-                        topics.append(heading)
-                        policy_subsections.append(f"{section_num}.{subsection_num} {heading}")
+                # Remove trailing punctuation and clean up
+                heading_clean = re.sub(r'[—–\-].*$', '', heading).strip()  # Remove em/en dash and everything after
+
+                logger.info(f"  Checking subsection {section_num}.{subsection_num}: '{heading_clean[:50]}'")
+
+                # Look for policy-related terms (check both full heading and cleaned version)
+                policy_keywords = ['time off', 'pto', 'leave', 'vacation', 'sick', 'holiday',
+                                  'benefit', 'compensation', 'overtime', 'schedule', 'hour', 'absence']
+
+                if any(keyword in heading for keyword in policy_keywords):
+                    # Use the cleaned version for the topic (remove redundant definition text)
+                    topic_text = heading_clean if len(heading_clean) < 50 else heading_clean[:50]
+                    topics.append(topic_text)
+                    policy_subsections.append(f"{section_num}.{subsection_num} {heading_clean[:60]}")
+                    logger.info(f"    ✓ MATCHED! Added: '{topic_text}'")
+
             if policy_subsections:
-                logger.info(f"Policy-related subsections: {policy_subsections}")
+                logger.info(f"Policy-related subsections found: {policy_subsections}")
+            else:
+                logger.info("No policy-related subsections matched keywords")
 
         # Find definitions (key terms)
         definitions = re.findall(r'\d+\.\d+\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\s*—', content)
