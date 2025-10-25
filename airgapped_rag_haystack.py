@@ -377,13 +377,22 @@ class HaystackRAG:
                 "ranker": {"query": question}
             })
         else:
-            # Semantic only
-            result = self.query_pipeline.run({
-                "text_embedder": {"text": question},
-                "embedding_retriever": {"top_k": top_k},
-                "bm25_retriever": {"query": "", "top_k": 0},  # Empty BM25
-                "ranker": {"query": question}
-            })
+            # Semantic only - we need to bypass BM25 retriever entirely
+            # Use a simplified pipeline for semantic-only mode
+            logger.info("Using semantic-only retrieval (no BM25)")
+
+            # Run just embedding retriever + ranker (skip BM25 and joiner)
+            embedding = self.text_embedder.run(text=question)
+            retrieved = self.embedding_retriever.run(
+                query_embedding=embedding["embedding"],
+                top_k=TOP_K_RETRIEVAL
+            )
+            reranked = self.ranker.run(
+                query=question,
+                documents=retrieved["documents"],
+                top_k=top_k
+            )
+            result = {"ranker": reranked}
 
         # Get ranked documents
         documents = result.get("ranker", {}).get("documents", [])
@@ -407,38 +416,50 @@ class HaystackRAG:
         if not documents:
             return "No relevant documents found to answer this question."
 
-        # Build context from documents
+        # Build context from documents - use MORE content per document
         context_parts = []
         for i, doc in enumerate(documents, 1):
-            content = doc.content[:2000]  # First 2000 chars
+            content = doc.content[:4000]  # Increased from 2000 to 4000 chars
             doc_num = doc.meta.get('doc_number', 'Unknown')
             doc_title = doc.meta.get('doc_title', 'Unknown')
-            context_parts.append(f"Document {i} ({doc_num} - {doc_title}):\n{content}\n")
+            source = doc.meta.get('source_url', 'Unknown')
+            context_parts.append(f"""Document {i}:
+Source: {source}
+Document Number: {doc_num}
+Title: {doc_title}
+Content:
+{content}
+""")
 
-        context = "\n---\n".join(context_parts)
+        context = "\n" + ("=" * 80) + "\n".join(context_parts)
 
-        # Build prompt
-        prompt = f"""Answer the following question using ONLY the information from the provided documents.
+        # Build MORE DIRECTIVE prompt
+        prompt = f"""You are answering questions based on policy documents. READ THE DOCUMENTS CAREFULLY.
 
-Question: {question}
+QUESTION: {question}
 
-Documents:
+DOCUMENTS PROVIDED:
 {context}
 
-Instructions:
-1. Answer based ONLY on information in the documents
-2. If the answer is in a document, reference it as "Document N"
-3. If no document contains relevant information, say so explicitly
-4. Be specific and cite which document contains the information
+INSTRUCTIONS:
+1. READ the documents above CAREFULLY
+2. SEARCH for relevant information in the document content
+3. If you find the answer, provide it and cite the document: "According to Document N (doc_number)..."
+4. If multiple documents have information, mention all relevant ones
+5. ONLY say "no information found" if you truly cannot find ANY relevant information after carefully reading
+6. Pay special attention to section numbers (like 4.3, 5.4) as they often contain specific policies
 
-Answer:"""
+ANSWER (be thorough and cite your sources):"""
 
-        # Call Ollama
+        # Call Ollama with higher temperature for better reasoning
         try:
             response = ollama.generate(
                 model=OLLAMA_LLM_MODEL,
                 prompt=prompt,
-                options={'temperature': 0.1}
+                options={
+                    'temperature': 0.3,  # Increased from 0.1 for better reasoning
+                    'num_predict': 500   # Allow longer responses
+                }
             )
             return response['response'].strip()
         except Exception as e:
