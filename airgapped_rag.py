@@ -449,6 +449,9 @@ Rewritten Query:"""
         """
         Generate a rich, searchable topic/summary for a document.
         Extracts topics directly from document structure instead of using LLM.
+
+        Returns a formatted string like:
+        "Telecommuting Policy EN-PO-0071: establish policy for telecommuting, eligibility, approval"
         """
         doc_number = doc_metadata.get('doc_number', '')
         doc_title = doc_metadata.get('doc_title', '')
@@ -456,25 +459,47 @@ Rewritten Query:"""
         # Extract topics from document structure
         topics = self._extract_topics_from_content(content[:max_chars])
 
-        # Build final topic string
+        # Build final topic string with fallbacks
         if doc_title and doc_number:
             if topics:
-                return f"{doc_title} {doc_number}: {topics}"[:300]
+                result = f"{doc_title} {doc_number}: {topics}"
             else:
-                return f"{doc_title} {doc_number}"
+                # No topics extracted, just use title and number
+                result = f"{doc_title} {doc_number}"
+            logger.info(f"Generated topic: {result[:100]}...")
+            return result[:300]
         elif doc_title:
-            return doc_title
+            if topics:
+                result = f"{doc_title}: {topics}"
+            else:
+                result = doc_title
+            logger.info(f"Generated topic: {result[:100]}...")
+            return result[:300]
+        elif doc_number:
+            if topics:
+                result = f"Document {doc_number}: {topics}"
+            else:
+                result = f"Document {doc_number}"
+            logger.info(f"Generated topic: {result[:100]}...")
+            return result[:300]
         else:
-            return "Policy Document"
+            # Last resort: use topics or generic fallback
+            if topics:
+                result = f"Policy Document: {topics}"
+            else:
+                result = "Policy Document"
+            logger.warning("Could not extract document number or title, using generic topic")
+            return result[:300]
 
     def _extract_topics_from_content(self, content: str) -> str:
         """
         Extract key topics directly from document content structure.
 
         Looks for:
-        1. Section headings (5.0, 5.1, etc.)
-        2. Purpose section
-        3. Definitions section
+        1. Purpose section (1.0 Purpose)
+        2. Section headings (5.0, 6.0, etc.)
+        3. Definitions section (4.x Term—definition)
+        4. Fallback to first meaningful paragraphs
         """
         topics = []
 
@@ -493,33 +518,56 @@ Rewritten Query:"""
 
         # Find section headings (main topics)
         section_headings = re.findall(r'\d+\.0\s+([A-Z][^\n]+)', content)
-        for heading in section_headings[1:6]:  # Skip first (Purpose), take next 4-5
-            heading = heading.strip().lower()
-            if heading and len(heading) < 50:
-                # Convert to singular if plural, remove generic words
-                heading = re.sub(r'(ies|s)$', '', heading)
-                if heading not in ['scope', 'applicable and reference document', 'definition']:
-                    topics.append(heading)
+        if len(section_headings) > 1:  # Check we have more than just Purpose
+            for heading in section_headings[1:6]:  # Skip first (Purpose), take next 4-5
+                heading = heading.strip().lower()
+                if heading and len(heading) < 50:
+                    # Skip generic section names
+                    skip_terms = ['scope', 'applicable and reference document', 'definition', 'reference']
+                    if not any(skip_term in heading for skip_term in skip_terms):
+                        topics.append(heading)
 
         # Find definitions (key terms)
-        definitions = re.findall(r'\d+\.\d+\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*—', content)
-        for term in definitions[:5]:  # First 5 defined terms
-            term = term.strip().lower()
-            if term and len(term) < 30:
-                topics.append(term)
+        definitions = re.findall(r'\d+\.\d+\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\s*—', content)
+        if definitions:
+            for term in definitions[:5]:  # First 5 defined terms
+                term = term.strip().lower()
+                if term and len(term) < 30:
+                    topics.append(term)
+
+        # Fallback: If we found very few topics, try to extract from first few paragraphs
+        if len(topics) < 2:
+            logger.info("Few topics found from structure, trying paragraph extraction")
+            # Find substantial paragraphs (not just headers)
+            paragraphs = re.findall(r'[A-Z][^.!?]{30,150}[.!?]', content[:3000])
+            for para in paragraphs[:3]:
+                # Extract noun phrases (simple heuristic)
+                words = para.lower().split()
+                if len(words) > 5:
+                    # Take middle portion as it's likely to have content words
+                    phrase = ' '.join(words[2:min(7, len(words))])
+                    if len(phrase) < 50:
+                        topics.append(phrase)
+                if len(topics) >= 4:
+                    break
 
         # Deduplicate and join
         unique_topics = []
         seen = set()
         for topic in topics:
-            topic_lower = topic.lower()
-            if topic_lower not in seen and len(topic) > 3:
+            topic_lower = topic.lower().strip()
+            # Skip very short or very common words
+            if (topic_lower not in seen and
+                len(topic_lower) > 3 and
+                topic_lower not in ['this', 'that', 'these', 'those', 'with', 'from']):
                 unique_topics.append(topic)
                 seen.add(topic_lower)
                 if len(unique_topics) >= 5:  # Max 5 topics
                     break
 
-        return ', '.join(unique_topics) if unique_topics else ''
+        result = ', '.join(unique_topics) if unique_topics else ''
+        logger.info(f"Extracted {len(unique_topics)} topics from document content")
+        return result
 
     def generate_answer_with_citations(
         self,
