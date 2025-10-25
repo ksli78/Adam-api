@@ -1,0 +1,57 @@
+# Docker Compose for Advanced RAG System
+# Runs both Ollama and RAG API containers
+
+version: '3.8'
+
+services:
+  # Ollama service (LLM runtime)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      # Persist Ollama models
+      - ollama_models:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+    # For GPU support, uncomment:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Advanced RAG API
+  rag-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.advanced
+    container_name: rag-api-advanced
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist document storage and ChromaDB
+      - rag_data:/data/airgapped_rag
+    environment:
+      - DATA_DIR=/data/airgapped_rag
+      - OLLAMA_HOST=http://ollama:11434
+      - LLM_MODEL=llama3:8b
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  ollama_models:
+    driver: local
+  rag_data:
+    driver: local
