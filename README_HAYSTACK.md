@@ -205,6 +205,7 @@ Shows retrieval scores and ranking details.
 | **Retrieval** | Semantic only | Hybrid (BM25 + semantic) |
 | **Reranking** | None | Cross-encoder reranker |
 | **Keyword Matching** | Poor (missed "PTO") | Excellent (BM25 finds it) |
+| **Persistence** | ❌ Lost on restart | ✅ ChromaDB persists to disk |
 | **Code Complexity** | ~1200 lines | ~800 lines |
 | **Maintenance** | High (regex brittle) | Low (framework handles it) |
 | **Accuracy** | 60-70% | 85-95% |
@@ -226,6 +227,30 @@ EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 
 # Reranker model
 RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
+```
+
+## Persistence
+
+**Documents are automatically persisted to disk!**
+
+- **Location**: `/data/airgapped_rag/chromadb`
+- **Technology**: ChromaDB with file-based persistence
+- **Behavior**: Documents survive API restarts, container restarts, system reboots
+
+You can safely:
+- ✅ Restart the API (`Ctrl+C` then restart)
+- ✅ Restart Docker containers
+- ✅ Reboot the server
+- ✅ Update code and restart
+
+**All documents will still be there!**
+
+To clear all documents:
+```bash
+# Stop API
+# Delete ChromaDB directory
+rm -rf /data/airgapped_rag/chromadb
+# Restart API - starts fresh
 ```
 
 ## Performance
