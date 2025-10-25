@@ -499,9 +499,35 @@ Rewritten Query:"""
         1. Purpose section (1.0 Purpose)
         2. Section headings (5.0, 6.0, etc.)
         3. Definitions section (4.x Term—definition)
-        4. Fallback to first meaningful paragraphs
+        4. Key terms from content (for better keyword matching)
+        5. Fallback to first meaningful paragraphs
         """
         topics = []
+
+        # Extract key acronyms and terms (PTO, FMLA, etc.) from first 3000 chars
+        # This helps with keyword matching for queries like "PTO Policy"
+        acronym_matches = re.findall(r'\b([A-Z]{2,5})\b', content[:3000])
+        common_acronyms = set(['ASMD', 'SMD', 'PDF', 'USA', 'LLC', 'INC', 'THE', 'AND', 'FOR'])
+        key_acronyms = [acr for acr in acronym_matches if acr not in common_acronyms]
+        # Take unique acronyms (first occurrence)
+        seen_acronyms = set()
+        unique_acronyms = []
+        for acr in key_acronyms:
+            if acr.lower() not in seen_acronyms:
+                unique_acronyms.append(acr)
+                seen_acronyms.add(acr.lower())
+                if len(unique_acronyms) >= 3:
+                    break
+
+        # Add acronyms to topics early (for better matching)
+        for acr in unique_acronyms:
+            # Try to find expansion (e.g., "PTO (Paid Time Off)")
+            expansion_pattern = rf'{acr}\s*\(([^)]+)\)'
+            expansion_match = re.search(expansion_pattern, content[:3000])
+            if expansion_match:
+                topics.append(f"{acr} ({expansion_match.group(1).lower()})")
+            else:
+                topics.append(acr.lower())
 
         # Find Purpose section (usually has key info)
         purpose_match = re.search(r'1\.0\s+Purpose\s*\n(.+?)(?=\n\d+\.0|\Z)', content, re.DOTALL | re.IGNORECASE)
@@ -535,8 +561,24 @@ Rewritten Query:"""
                 if term and len(term) < 30:
                     topics.append(term)
 
+        # Extract important noun phrases from content for better semantic matching
+        # Look for capitalized phrases that might be key concepts
+        key_phrases = re.findall(r'(?:^|\. )([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4})', content[:5000])
+        phrase_counts = {}
+        for phrase in key_phrases:
+            phrase_lower = phrase.lower()
+            # Skip if it's a common header or location
+            if phrase_lower not in ['purpose', 'scope', 'page', 'document no', 'amentum']:
+                phrase_counts[phrase_lower] = phrase_counts.get(phrase_lower, 0) + 1
+
+        # Add top repeated phrases (likely important concepts)
+        top_phrases = sorted(phrase_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+        for phrase, count in top_phrases:
+            if count >= 2 and len(phrase) < 40:  # Repeated at least twice
+                topics.append(phrase)
+
         # Fallback: If we found very few topics, try to extract from first few paragraphs
-        if len(topics) < 2:
+        if len(topics) < 3:
             logger.info("Few topics found from structure, trying paragraph extraction")
             # Find substantial paragraphs (not just headers)
             paragraphs = re.findall(r'[A-Z][^.!?]{30,150}[.!?]', content[:3000])
@@ -548,7 +590,7 @@ Rewritten Query:"""
                     phrase = ' '.join(words[2:min(7, len(words))])
                     if len(phrase) < 50:
                         topics.append(phrase)
-                if len(topics) >= 4:
+                if len(topics) >= 5:
                     break
 
         # Deduplicate and join
