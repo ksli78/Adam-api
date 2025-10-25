@@ -519,28 +519,28 @@ class OllamaClient:
             logger.warning("Could not extract document number or title, using generic topic")
             return result[:300]
 
-    def generate_searchable_text(self, topic: str, content: str, max_content_chars: int = 2000) -> str:
+    def generate_searchable_text(self, topic: str, content: str, max_content_chars: int = 6000) -> str:
         """
         Generate searchable text by combining topic with content sample.
 
         This improves retrieval by including both:
         - Topic (structured summary)
-        - Content sample (for keyword matching)
+        - Content sample (for keyword matching, including deeper sections)
 
         Args:
             topic: The extracted topic/summary
             content: Full document content
-            max_content_chars: Max characters from content to include
+            max_content_chars: Max characters from content to include (default 6000)
 
         Returns:
-            Combined searchable text for embedding
+            Combined searchable text for embedding (up to 8000 chars)
         """
         # Start with topic
         searchable = topic
 
-        # Add a content sample for better keyword matching
-        # Skip the first page (usually headers/boilerplate) and take from purpose/policy sections
-        content_sample = content[500:500+max_content_chars] if len(content) > 500 else content[:max_content_chars]
+        # Add a LARGER content sample to catch sections like 4.3, 5.4
+        # Take from beginning (skip minimal boilerplate) to capture early + middle sections
+        content_sample = content[300:300+max_content_chars] if len(content) > 300 else content[:max_content_chars]
 
         # Clean the content sample (remove excessive whitespace, page markers)
         content_sample = re.sub(r'Page\s+\d+\s+of\s+\d+', '', content_sample)
@@ -550,7 +550,7 @@ class OllamaClient:
         searchable = f"{topic}\n\nContent: {content_sample}"
 
         logger.info(f"Generated searchable text: {len(searchable)} chars (topic + content sample)")
-        return searchable[:4000]  # Limit to 4000 chars total
+        return searchable[:8000]  # Increased limit to 8000 chars to capture more content
 
     def _extract_topics_from_content(self, content: str) -> str:
         """
@@ -565,28 +565,33 @@ class OllamaClient:
         """
         topics = []
 
-        # Extract key acronyms and terms (PTO, FMLA, etc.) from first 3000 chars
-        # This helps with keyword matching for queries like "PTO Policy"
-        acronym_matches = re.findall(r'\b([A-Z]{2,5})\b', content[:3000])
-        common_acronyms = set(['ASMD', 'SMD', 'PDF', 'USA', 'LLC', 'INC', 'THE', 'AND', 'FOR'])
+        # Extract key acronyms from ENTIRE document (not just first 3000 chars)
+        # This is critical for catching terms like PTO that may be in section 4.3 or 5.4
+        acronym_matches = re.findall(r'\b([A-Z]{2,5})\b', content)
+        common_acronyms = set(['ASMD', 'SMD', 'PDF', 'USA', 'LLC', 'INC', 'THE', 'AND', 'FOR', 'PAGE', 'NASA', 'GSFC'])
         key_acronyms = [acr for acr in acronym_matches if acr not in common_acronyms]
-        # Take unique acronyms (first occurrence)
-        seen_acronyms = set()
-        unique_acronyms = []
-        for acr in key_acronyms:
-            if acr.lower() not in seen_acronyms:
-                unique_acronyms.append(acr)
-                seen_acronyms.add(acr.lower())
-                if len(unique_acronyms) >= 3:
-                    break
 
-        # Add acronyms to topics early (for better matching)
-        for acr in unique_acronyms:
-            # Try to find expansion (e.g., "PTO (Paid Time Off)")
+        # Count frequency of each acronym (important terms appear multiple times)
+        acronym_counts = {}
+        for acr in key_acronyms:
+            acronym_counts[acr] = acronym_counts.get(acr, 0) + 1
+
+        # Take top 5 most frequent acronyms
+        top_acronyms = sorted(acronym_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+
+        # Add acronyms to topics with their expansions
+        for acr, count in top_acronyms:
+            # Try to find expansion (e.g., "PTO (Paid Time Off)") - search entire doc
             expansion_pattern = rf'{acr}\s*\(([^)]+)\)'
-            expansion_match = re.search(expansion_pattern, content[:3000])
+            expansion_match = re.search(expansion_pattern, content)
             if expansion_match:
-                topics.append(f"{acr} ({expansion_match.group(1).lower()})")
+                expansion = expansion_match.group(1).lower()
+                # Clean expansion
+                expansion = re.sub(r'\s+', ' ', expansion).strip()
+                if len(expansion) < 50:
+                    topics.append(f"{acr.lower()} ({expansion})")
+                else:
+                    topics.append(acr.lower())
             else:
                 topics.append(acr.lower())
 
@@ -603,15 +608,31 @@ class OllamaClient:
                 if len(phrase) < 100:
                     topics.append(phrase)
 
-        # Find section headings (main topics)
-        section_headings = re.findall(r'\d+\.0\s+([A-Z][^\n]+)', content)
-        if len(section_headings) > 1:  # Check we have more than just Purpose
-            for heading in section_headings[1:6]:  # Skip first (Purpose), take next 4-5
+        # Find ALL section headings (including subsections like 4.3, 5.4)
+        # Main sections: 1.0, 2.0, 3.0, etc.
+        main_headings = re.findall(r'(\d+)\.0\s+([A-Z][^\n]{3,60})', content)
+        # Subsections: 4.3, 5.4, etc.
+        sub_headings = re.findall(r'(\d+)\.(\d+)\s+([A-Z][^\n]{3,60})', content)
+
+        # Process main section headings
+        if main_headings:
+            for section_num, heading in main_headings[1:8]:  # Skip Purpose, take next 7
                 heading = heading.strip().lower()
                 if heading and len(heading) < 50:
                     # Skip generic section names
-                    skip_terms = ['scope', 'applicable and reference document', 'definition', 'reference']
+                    skip_terms = ['scope', 'applicable and reference document', 'definition', 'reference', 'introduction']
                     if not any(skip_term in heading for skip_term in skip_terms):
+                        topics.append(heading)
+
+        # Process subsection headings (like "4.3 Paid Time Off")
+        # These often contain specific policy details
+        if sub_headings:
+            for section_num, subsection_num, heading in sub_headings[:10]:  # Take first 10 subsections
+                heading = heading.strip().lower()
+                if heading and len(heading) < 60:
+                    # Look for policy-related terms
+                    if any(keyword in heading for keyword in ['time off', 'pto', 'leave', 'vacation', 'sick', 'holiday',
+                                                              'benefit', 'compensation', 'overtime', 'schedule', 'hour']):
                         topics.append(heading)
 
         # Find definitions (key terms)
