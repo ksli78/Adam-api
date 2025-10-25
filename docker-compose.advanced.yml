@@ -1,36 +1,17 @@
-# Docker Compose for Advanced RAG System
-# Runs both Ollama and RAG API containers
+# Docker Compose for Advanced RAG API
+#
+# This starts ONLY the RAG API container.
+# Assumes Ollama is already running separately (via docker-compose.ollama.yml or locally).
+#
+# Usage:
+#   1. Ensure Ollama is running: docker ps | grep ollama
+#   2. Start RAG API: docker-compose -f docker-compose.advanced.yml up -d
+#   3. Check health: curl http://localhost:8000/health
 
 version: '3.8'
 
 services:
-  # Ollama service (LLM runtime)
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      # Persist Ollama models
-      - ollama_models:/root/.ollama
-    environment:
-      - OLLAMA_HOST=0.0.0.0:11434
-    # For GPU support, uncomment:
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
-  # Advanced RAG API
+  # Advanced RAG API (connects to existing Ollama)
   rag-api:
     build:
       context: .
@@ -43,15 +24,16 @@ services:
       - rag_data:/data/airgapped_rag
     environment:
       - DATA_DIR=/data/airgapped_rag
-      - OLLAMA_HOST=http://ollama:11434
+      # Connect to Ollama running on host
+      # On Windows/Mac Docker Desktop: host.docker.internal
+      # On Linux: Use --add-host=host.docker.internal:host-gateway
+      - OLLAMA_HOST=http://host.docker.internal:11434
       - LLM_MODEL=llama3:8b
-    depends_on:
-      ollama:
-        condition: service_healthy
+    # For Linux, uncomment to add host.docker.internal:
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
 volumes:
-  ollama_models:
-    driver: local
   rag_data:
     driver: local

@@ -2,38 +2,52 @@
 
 ## Overview
 
-The Advanced RAG system runs in **two separate Docker containers**:
+The Advanced RAG API runs in a **single Docker container** that connects to your **existing Ollama** instance.
 
-1. **Ollama container** - Runs the LLM (llama3:8b)
-2. **RAG API container** - Runs the document processing and query API
+**Setup**:
+1. **Ollama** - Already running (via your existing docker-compose.ollama.yml)
+2. **RAG API container** - Connects to Ollama via `host.docker.internal`
 
-These containers communicate via Docker networking.
+This keeps the containers separate so you can:
+- Debug the RAG API locally before containerizing
+- Keep Ollama configuration independent
+- Update/restart either service without affecting the other
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────┐
-│  Host Machine (Windows/Linux/Mac)   │
-│                                     │
-│  ┌─────────────────────────────┐   │
-│  │  Docker Network             │   │
-│  │                             │   │
-│  │  ┌──────────────────────┐   │   │
-│  │  │  Ollama Container    │   │   │
-│  │  │  Port: 11434         │   │   │
-│  │  │  Model: llama3:8b    │   │   │
-│  │  └──────────┬───────────┘   │   │
-│  │             │                │   │
-│  │  ┌──────────▼───────────┐   │   │
-│  │  │  RAG API Container   │   │   │
-│  │  │  Port: 8000          │   │   │
-│  │  │  + Docling           │   │   │
-│  │  │  + poppler-utils     │   │   │
-│  │  │  + tesseract-ocr     │   │   │
-│  │  │  + ChromaDB          │   │   │
-│  │  └──────────────────────┘   │   │
-│  └─────────────────────────────┘   │
-└─────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│  Host Machine (Windows/Linux/Mac)                   │
+│                                                     │
+│  ┌──────────────────────────────────────────────┐  │
+│  │  Existing Ollama Container                   │  │
+│  │  (via docker-compose.ollama.yml)             │  │
+│  │  Port: 11434                                 │  │
+│  │  Model: llama3:8b                            │  │
+│  └────────────────────┬─────────────────────────┘  │
+│                       │ host.docker.internal        │
+│                       │ :11434                      │
+│  ┌────────────────────▼─────────────────────────┐  │
+│  │  RAG API Container                           │  │
+│  │  (docker-compose.advanced.yml)               │  │
+│  │  Port: 8000                                  │  │
+│  │  ├─ Docling (PDF extraction)                 │  │
+│  │  ├─ poppler-utils (PDF tools)                │  │
+│  │  ├─ tesseract-ocr (OCR)                      │  │
+│  │  ├─ ChromaDB (vector storage)                │  │
+│  │  ├─ DocumentCleaner                          │  │
+│  │  ├─ SemanticChunker                          │  │
+│  │  ├─ MetadataExtractor                        │  │
+│  │  └─ ParentChildStore                         │  │
+│  └──────────────────────────────────────────────┘  │
+│                                                     │
+│  OR Debug Locally (no container):                  │
+│  ┌──────────────────────────────────────────────┐  │
+│  │  python run_advanced.py                      │  │
+│  │  ├─ Connects to Ollama at localhost:11434    │  │
+│  │  └─ Stores data in /data/airgapped_rag       │  │
+│  └──────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────┘
 ```
 
 ## System Dependencies Explanation
@@ -69,56 +83,73 @@ These are **system-level dependencies** needed by **Docling** (the PDF extractio
 
 ## Quick Start
 
-### Option 1: Docker Compose (Recommended)
+### Prerequisites
+
+**Ensure Ollama is already running**:
+```bash
+# Check if Ollama container is running
+docker ps | grep ollama
+
+# If not running, start it with your existing docker-compose
+docker-compose -f docker-compose.ollama.yml up -d
+
+# Verify Ollama is accessible
+curl http://localhost:11434/api/tags
+
+# Ensure llama3:8b model is pulled
+docker exec ollama ollama list | grep llama3
+# If not present: docker exec ollama ollama pull llama3:8b
+```
+
+### Option 1: Local Development (Debug First)
+
+**Recommended workflow**: Test locally before containerizing
 
 ```bash
-# 1. Build and start both containers
-docker-compose -f docker-compose.advanced.yml up -d
+# 1. Install Python dependencies
+pip install -r requirements.txt
+python -c "import nltk; nltk.download('punkt')"
 
-# 2. Wait for Ollama to be ready (takes ~30 seconds)
-docker logs ollama -f
-# Wait until you see: "Ollama is running"
+# 2. Install system dependencies (Windows)
+choco install poppler tesseract
+# OR skip for quick testing (reduced PDF quality)
 
-# 3. Pull the LLM model into Ollama container
-docker exec ollama ollama pull llama3:8b
-# This downloads ~4.7GB - takes 5-10 minutes depending on connection
+# 3. Run locally
+python run_advanced.py
+# Connects to Ollama at localhost:11434
 
-# 4. Verify RAG API is ready
+# 4. Test
 curl http://localhost:8000/health
-# Should return: {"status": "healthy", "version": "2.0.0"}
 
-# 5. Test with a document upload
+# 5. Upload a document
 curl -X POST http://localhost:8000/upload-document \
   -F "file=@test.pdf" \
   -F "source_url=https://test.com/test.pdf"
+
+# 6. Debug, iterate, test...
 ```
 
-### Option 2: Separate Containers
+### Option 2: Docker Container (After Debugging)
 
-If you want to build/run containers separately:
+**Once you're happy with local testing**, containerize it:
 
 ```bash
-# 1. Start Ollama
-docker run -d \
-  --name ollama \
-  -p 11434:11434 \
-  -v ollama_models:/root/.ollama \
-  ollama/ollama:latest
+# 1. Ensure Ollama is running (from prerequisites)
+docker ps | grep ollama
 
-# 2. Pull LLM model
-docker exec ollama ollama pull llama3:8b
+# 2. Build and start RAG API container
+docker-compose -f docker-compose.advanced.yml up -d
 
-# 3. Build RAG API
-docker build -f Dockerfile.advanced -t rag-api-advanced .
+# 3. Check logs
+docker logs -f rag-api-advanced
 
-# 4. Run RAG API (linked to Ollama)
-docker run -d \
-  --name rag-api \
-  -p 8000:8000 \
-  -v rag_data:/data/airgapped_rag \
-  -e OLLAMA_HOST=http://ollama:11434 \
-  --link ollama \
-  rag-api-advanced
+# 4. Verify health
+curl http://localhost:8000/health
+
+# 5. Test with document upload
+curl -X POST http://localhost:8000/upload-document \
+  -F "file=@test.pdf" \
+  -F "source_url=https://test.com/test.pdf"
 ```
 
 ## Local Development (Windows)
@@ -235,25 +266,39 @@ docker run --rm -v adam-api_rag_data:/data \
 
 ### "Ollama not reachable" from RAG API
 
-**Problem**: RAG API can't connect to Ollama at `http://ollama:11434`
+**Problem**: RAG API can't connect to Ollama at `http://host.docker.internal:11434`
 
 **Solutions**:
+
 ```bash
 # 1. Check Ollama is running
 docker ps | grep ollama
 
-# 2. Check Ollama health
-docker exec ollama ollama list
+# 2. Check Ollama is accessible from host
+curl http://localhost:11434/api/tags
 
-# 3. Check network connectivity
-docker exec rag-api ping ollama
+# 3. Check Ollama is accessible from RAG container
+docker exec rag-api-advanced curl http://host.docker.internal:11434/api/tags
 
-# 4. Check Ollama logs
-docker logs ollama
+# 4. If on Linux, add extra_hosts to docker-compose.advanced.yml:
+#    Uncomment this section:
+#    extra_hosts:
+#      - "host.docker.internal:host-gateway"
 
-# 5. Restart containers in order
-docker-compose -f docker-compose.advanced.yml restart ollama
-docker-compose -f docker-compose.advanced.yml restart rag-api
+# 5. Check RAG API logs for connection errors
+docker logs rag-api-advanced
+
+# 6. Restart RAG API container
+docker-compose -f docker-compose.advanced.yml restart
+```
+
+**Alternative**: If `host.docker.internal` doesn't work, find your host IP:
+```bash
+# On Linux, get Docker bridge IP
+ip addr show docker0
+
+# Then update docker-compose.advanced.yml:
+# - OLLAMA_HOST=http://172.17.0.1:11434  # Use actual bridge IP
 ```
 
 ### "Model not found: llama3:8b"
@@ -401,29 +446,57 @@ docker exec ollama ollama pull llama3:70b
 
 ✅ **System dependencies** (poppler, tesseract) → Dockerfile.advanced
 ✅ **Python dependencies** → requirements.txt
-✅ **Ollama** → Separate container (docker-compose.advanced.yml)
-✅ **RAG API** → Separate container with system dependencies
+✅ **Ollama** → Existing container (docker-compose.ollama.yml) - **stays separate**
+✅ **RAG API** → New container (docker-compose.advanced.yml) - connects to existing Ollama
 ✅ **Windows development** → Install poppler/tesseract manually OR skip (reduced quality)
+
+### Workflow
+
+```
+1. Debug Locally:
+   └─> python run_advanced.py (connects to Ollama at localhost:11434)
+
+2. When Ready:
+   └─> docker-compose -f docker-compose.advanced.yml up -d
+       └─> RAG API container connects to Ollama via host.docker.internal:11434
+```
 
 ---
 
 **Quick Commands Cheatsheet**:
+
 ```bash
-# Start everything
+# === Local Development ===
+# Start Ollama (if not running)
+docker ps | grep ollama  # Check first
+docker-compose -f docker-compose.ollama.yml up -d
+
+# Run RAG API locally
+python run_advanced.py
+
+# === Docker Deployment ===
+# Build and start RAG API container
 docker-compose -f docker-compose.advanced.yml up -d
 
-# Pull model
-docker exec ollama ollama pull llama3:8b
-
-# Check health
+# Check RAG API health
 curl http://localhost:8000/health
 
-# View logs
-docker-compose -f docker-compose.advanced.yml logs -f
+# View RAG API logs
+docker logs -f rag-api-advanced
 
-# Stop everything
+# Restart RAG API (keep Ollama running)
+docker-compose -f docker-compose.advanced.yml restart
+
+# Stop RAG API (keep Ollama running)
 docker-compose -f docker-compose.advanced.yml down
 
-# Stop and remove volumes (fresh start)
+# Stop RAG API and delete data (fresh start)
 docker-compose -f docker-compose.advanced.yml down -v
+
+# === Both Systems ===
+# Check Ollama model
+docker exec ollama ollama list
+
+# Pull/update Ollama model
+docker exec ollama ollama pull llama3:8b
 ```
