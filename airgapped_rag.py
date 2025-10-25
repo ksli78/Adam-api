@@ -141,16 +141,48 @@ def extract_document_metadata(content: str) -> Dict[str, str]:
             break
 
     # Try to find title (usually after document number or near top)
-    # Look for lines that look like titles (5-60 chars, capitalized)
-    for i, line in enumerate(lines[:30]):  # Check first 30 lines
+    # Strategy: Look for lines containing "Policy" or "Procedure" near document number
+    doc_title_candidates = []
+
+    for i, line in enumerate(lines[:40]):  # Check first 40 lines
         line = line.strip()
-        if 5 < len(line) < 60 and not line.startswith('Page') and line[0].isupper():
-            # Skip if it's just boilerplate
-            if 'proprietary' not in line.lower() and 'copyright' not in line.lower():
-                # Check if it looks like a title
-                if line.count(' ') >= 1 and line.count(' ') <= 8:
-                    metadata['doc_title'] = line
-                    break
+        line_lower = line.lower()
+
+        # Skip unwanted lines
+        if (len(line) < 5 or len(line) > 80 or
+            line.startswith('Page') or
+            'proprietary' in line_lower or
+            'copyright' in line_lower or
+            'confidential' in line_lower or
+            'amentum' in line_lower):
+            continue
+
+        # Skip if it's just the document number
+        if re.match(r'^[A-Z]{2}-[A-Z]{2}-\d{4}$', line):
+            continue
+
+        # Look for policy/procedure titles
+        if any(keyword in line_lower for keyword in ['policy', 'procedure', 'guideline', 'standard']):
+            # This is likely a title
+            doc_title_candidates.append((i, line))
+        elif (line[0].isupper() and
+              1 <= line.count(' ') <= 8 and
+              10 <= len(line) <= 60):
+            # Generic title pattern
+            # Skip if it's too generic
+            if line_lower not in ['management system', 'document', 'revision', 'effective date']:
+                doc_title_candidates.append((i, line))
+
+    # Prefer titles with "policy" or "procedure" keywords
+    for idx, title in doc_title_candidates:
+        title_lower = title.lower()
+        if any(kw in title_lower for kw in ['policy', 'procedure', 'guideline']):
+            metadata['doc_title'] = title
+            break
+
+    # Fallback to first candidate
+    if not metadata['doc_title'] and doc_title_candidates:
+        metadata['doc_title'] = doc_title_candidates[0][1]
 
     return metadata
 
