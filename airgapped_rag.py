@@ -491,6 +491,39 @@ Rewritten Query:"""
             logger.warning("Could not extract document number or title, using generic topic")
             return result[:300]
 
+    def generate_searchable_text(self, topic: str, content: str, max_content_chars: int = 2000) -> str:
+        """
+        Generate searchable text by combining topic with content sample.
+
+        This improves retrieval by including both:
+        - Topic (structured summary)
+        - Content sample (for keyword matching)
+
+        Args:
+            topic: The extracted topic/summary
+            content: Full document content
+            max_content_chars: Max characters from content to include
+
+        Returns:
+            Combined searchable text for embedding
+        """
+        # Start with topic
+        searchable = topic
+
+        # Add a content sample for better keyword matching
+        # Skip the first page (usually headers/boilerplate) and take from purpose/policy sections
+        content_sample = content[500:500+max_content_chars] if len(content) > 500 else content[:max_content_chars]
+
+        # Clean the content sample (remove excessive whitespace, page markers)
+        content_sample = re.sub(r'Page\s+\d+\s+of\s+\d+', '', content_sample)
+        content_sample = re.sub(r'\s+', ' ', content_sample)
+
+        # Combine topic with content sample
+        searchable = f"{topic}\n\nContent: {content_sample}"
+
+        logger.info(f"Generated searchable text: {len(searchable)} chars (topic + content sample)")
+        return searchable[:4000]  # Limit to 4000 chars total
+
     def _extract_topics_from_content(self, content: str) -> str:
         """
         Extract key topics directly from document content structure.
@@ -958,9 +991,13 @@ async def upload_document(
         topic = ollama_client.generate_topic(markdown_content, doc_metadata)
         logger.info(f"Generated topic: {topic}")
 
-        # Generate embedding for the topic
-        logger.info("Generating topic embedding...")
-        topic_embedding = ollama_client.generate_embedding(topic)
+        # Generate searchable text (topic + content sample)
+        logger.info("Generating searchable text for embedding...")
+        searchable_text = ollama_client.generate_searchable_text(topic, markdown_content)
+
+        # Generate embedding for the searchable text (topic + content)
+        logger.info("Generating embedding...")
+        topic_embedding = ollama_client.generate_embedding(searchable_text)
 
         # Store full document
         doc_store.store_document(
