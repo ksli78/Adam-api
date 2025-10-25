@@ -1,0 +1,115 @@
+# Document Cleaning Configuration
+# Patterns to remove noise from extracted documents
+
+# Regex patterns for text removal
+# Each pattern is compiled with IGNORECASE and MULTILINE flags
+patterns_to_remove:
+  # CUI/Security Banners
+  - pattern: "CUI//.*?//CUI"
+    description: "Controlled Unclassified Information banners"
+
+  - pattern: "COMPANY\\s+CONFIDENTIAL"
+    description: "Company confidential markings"
+
+  - pattern: "PROPRIETARY\\s+AND\\s+CONFIDENTIAL"
+    description: "Proprietary confidential markings"
+
+  - pattern: "FOR\\s+OFFICIAL\\s+USE\\s+ONLY"
+    description: "FOUO markings"
+
+  # Page numbers and pagination
+  - pattern: "^Page\\s+\\d+\\s+of\\s+\\d+\\s*$"
+    description: "Page X of Y format"
+
+  - pattern: "^\\d+\\s*$"
+    description: "Standalone page numbers"
+
+  - pattern: "^-\\s*\\d+\\s*-\\s*$"
+    description: "Page numbers with dashes (- 5 -)"
+
+  # Headers and footers
+  - pattern: "Printed\\s+on:?\\s*\\d{1,2}/\\d{1,2}/\\d{2,4}"
+    description: "Printed on dates"
+
+  - pattern: "Document\\s+ID:?\\s*[A-Z0-9-]+"
+    description: "Document ID in headers"
+
+  - pattern: "^Revision\\s+Date:.*$"
+    description: "Revision date lines"
+
+  - pattern: "^Effective\\s+Date:.*$"
+    description: "Effective date lines"
+
+  # Signature blocks (often irrelevant for RAG)
+  - pattern: "^Signature:?\\s*_+\\s*$"
+    description: "Signature lines"
+
+  - pattern: "^Signed\\s+by:?.*$"
+    description: "Signed by lines"
+
+  - pattern: "^Approved\\s+by:?\\s*_+\\s*$"
+    description: "Approved by signature lines"
+
+  - pattern: "^Prepared\\s+by:?\\s*_+\\s*$"
+    description: "Prepared by signature lines"
+
+  # Table of Contents (often not useful for retrieval)
+  - pattern: "^TABLE\\s+OF\\s+CONTENTS.*?(?=^[^\\s]|\\Z)"
+    description: "Table of contents section"
+    flags: ["DOTALL"]
+
+  # Excessive whitespace and formatting
+  - pattern: "\\s{3,}"
+    description: "Multiple consecutive spaces"
+    replace_with: " "
+
+  - pattern: "\\n{4,}"
+    description: "Excessive newlines"
+    replace_with: "\n\n\n"
+
+  # Common boilerplate
+  - pattern: "This\\s+document\\s+is\\s+the\\s+property\\s+of.*?(?=\\n\\n|$)"
+    description: "Property disclaimers"
+
+  - pattern: "Unauthorized\\s+disclosure.*?(?=\\n\\n|$)"
+    description: "Disclosure warnings"
+
+# Lines to skip entirely (case-insensitive match)
+skip_lines_containing:
+  - "© Copyright"
+  - "All Rights Reserved"
+  - "Confidential and Proprietary"
+  - "[COMPANY LOGO]"
+  - "Internal Use Only"
+  - "Do Not Distribute"
+
+# Minimum content length
+# Sections with fewer characters are discarded as noise
+min_section_length: 100
+
+# Minimum line length to keep (in characters)
+# Very short lines are often headers/footers/page numbers
+min_line_length: 15
+
+# Remove lines that are mostly punctuation
+remove_punctuation_heavy_lines: true
+punctuation_threshold: 0.5  # If >50% of characters are punctuation, remove
+
+# Clean up artifacts from poor OCR/extraction
+fix_common_artifacts:
+  enabled: true
+  replacements:
+    "�": ""  # Remove replacement characters
+    "\\x00": ""  # Remove null bytes
+    "\\uf0b7": "•"  # Fix bullet points
+    "\\u2022": "•"  # Standard bullet
+    "fi": "fi"  # Fix ligature issues (if they appear as separate)
+    "fl": "fl"
+    "\\u200b": ""  # Remove zero-width spaces
+
+# Section markers to detect (helps with semantic chunking)
+section_markers:
+  - "^\\d+\\.\\s+"  # 1. Section
+  - "^\\d+\\.\\d+\\.?\\s+"  # 1.1 Subsection
+  - "^[A-Z][a-z]+:$"  # Purpose: Introduction:
+  - "^[A-Z][A-Z\\s]+$"  # ALL CAPS SECTION HEADERS
