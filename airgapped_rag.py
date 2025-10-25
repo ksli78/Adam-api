@@ -1112,6 +1112,58 @@ async def list_documents():
         logger.error(f"Error listing documents: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/debug-search")
+async def debug_search(request: QueryRequest):
+    """
+    Debug endpoint to show similarity scores and document matching.
+    Helps diagnose why certain documents are (or aren't) being retrieved.
+    """
+    try:
+        question = request.prompt.strip()
+        top_k = max(1, min(request.top_k or 5, 10))
+
+        # Optionally rewrite query
+        search_query = question
+        if request.rewrite_query:
+            search_query = ollama_client.rewrite_query(question)
+
+        # Generate embedding
+        query_embedding = ollama_client.generate_embedding(search_query)
+
+        # Search with higher top_k to see all candidates
+        search_results = vector_store.search(query_embedding, top_k=10)
+
+        # Get all documents with their scores
+        debug_info = {
+            "original_query": question,
+            "search_query": search_query,
+            "results": []
+        }
+
+        if search_results['ids'][0]:
+            doc_ids = search_results['ids'][0]
+            distances = search_results['distances'][0] if 'distances' in search_results else [0] * len(doc_ids)
+            metadatas = search_results['metadatas'][0] if 'metadatas' in search_results else [{}] * len(doc_ids)
+
+            for doc_id, distance, metadata in zip(doc_ids, distances, metadatas):
+                doc = doc_store.get_document(doc_id)
+                if doc:
+                    debug_info["results"].append({
+                        "doc_id": doc_id,
+                        "doc_number": metadata.get('doc_number', 'N/A'),
+                        "doc_title": metadata.get('doc_title', 'N/A'),
+                        "topic": metadata.get('topic', 'N/A'),
+                        "distance": distance,
+                        "similarity": 1 - distance,  # Convert distance to similarity
+                        "source_url": metadata.get('source_url', 'N/A')
+                    })
+
+        return debug_info
+
+    except Exception as e:
+        logger.error(f"Debug search error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.delete("/documents/{document_id}")
 async def delete_document(document_id: str):
     """Delete a document from the system."""
