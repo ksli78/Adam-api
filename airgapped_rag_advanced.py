@@ -245,13 +245,15 @@ class AdvancedRAGPipeline:
         top_k: int = 10,
         parent_limit: int = 3,
         metadata_filter: Dict[str, Any] = None,
-        temperature: float = 0.3
+        temperature: float = 0.3,
+        use_hybrid: bool = True,
+        bm25_weight: float = 0.5
     ) -> Dict[str, Any]:
         """
         Query the RAG system with parent-child retrieval.
 
         Process:
-        1. Retrieve top_k child chunks (precise)
+        1. Retrieve top_k child chunks (hybrid: BM25 + semantic)
         2. Expand to parent chunks (context)
         3. Pass parent chunks to LLM
         4. Generate answer with citations
@@ -262,20 +264,24 @@ class AdvancedRAGPipeline:
             parent_limit: Maximum number of parent chunks for LLM
             metadata_filter: Optional metadata filter
             temperature: LLM temperature
+            use_hybrid: Use hybrid search (BM25 + semantic)
+            bm25_weight: Weight for BM25 scores (0.0-1.0)
 
         Returns:
             Dict with answer and citations
         """
-        logger.info(f"Processing query: {question}")
+        logger.info(f"Processing query: {question} (hybrid={use_hybrid}, bm25_weight={bm25_weight})")
 
         try:
-            # Retrieve with parent expansion
+            # Retrieve with parent expansion (using hybrid search)
             child_results, parent_results = self.document_store.retrieve_with_parent_expansion(
                 query=question,
                 top_k=top_k,
                 expand_to_parents=True,
                 parent_limit=parent_limit,
-                metadata_filter=metadata_filter
+                metadata_filter=metadata_filter,
+                use_hybrid=use_hybrid,
+                bm25_weight=bm25_weight
             )
 
             if not parent_results:
@@ -387,6 +393,8 @@ class QueryRequest(BaseModel):
     parent_limit: int = 3
     temperature: float = 0.3
     metadata_filter: Optional[Dict[str, Any]] = None
+    use_hybrid: bool = True  # Use hybrid search (BM25 + semantic) by default
+    bm25_weight: float = 0.5  # Weight for BM25 vs semantic (0.5 = equal weight)
 
 
 class QueryResponse(BaseModel):
@@ -435,9 +443,16 @@ async def upload_document(
 @app.post("/query", response_model=QueryResponse)
 async def query(request: QueryRequest):
     """
-    Query the RAG system.
+    Query the RAG system with hybrid search (BM25 + semantic).
 
-    Retrieves child chunks, expands to parents, generates answer.
+    Retrieves child chunks using hybrid search, expands to parents, generates answer.
+
+    Hybrid search combines:
+    - BM25: Keyword/lexical matching (good for exact terms)
+    - Semantic: Embedding similarity (good for concepts)
+
+    Set use_hybrid=False for pure semantic search.
+    Adjust bm25_weight (0.0-1.0) to control BM25 vs semantic influence.
     """
     try:
         result = await rag_pipeline.query(
@@ -445,7 +460,9 @@ async def query(request: QueryRequest):
             top_k=request.top_k,
             parent_limit=request.parent_limit,
             metadata_filter=request.metadata_filter,
-            temperature=request.temperature
+            temperature=request.temperature,
+            use_hybrid=request.use_hybrid,
+            bm25_weight=request.bm25_weight
         )
 
         return result

@@ -21,6 +21,7 @@ import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 import numpy as np
+from rank_bm25 import BM25Okapi
 
 from semantic_chunker import Chunk
 
@@ -181,14 +182,16 @@ class ParentChildDocumentStore:
         top_k: int = 10,
         expand_to_parents: bool = True,
         parent_limit: int = 3,
-        metadata_filter: Dict[str, Any] = None
+        metadata_filter: Dict[str, Any] = None,
+        use_hybrid: bool = True,
+        bm25_weight: float = 0.5
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Retrieve child chunks and optionally expand to parent chunks.
 
         Strategy:
-        1. Embed query
-        2. Search child collection (precise retrieval)
+        1. Run hybrid search (BM25 + Semantic) on child chunks
+        2. Fuse scores with weighted combination
         3. If expand_to_parents, get corresponding parent chunks
         4. Deduplicate parents
         5. Return both child and parent chunks
@@ -199,12 +202,55 @@ class ParentChildDocumentStore:
             expand_to_parents: Whether to expand to parent chunks
             parent_limit: Maximum number of unique parent chunks to return
             metadata_filter: Optional metadata filter for search
+            use_hybrid: Whether to use hybrid (BM25 + semantic) search
+            bm25_weight: Weight for BM25 scores (0.0-1.0), semantic gets (1-bm25_weight)
 
         Returns:
             Tuple of (child_results, parent_results)
         """
-        logger.debug(f"Retrieving for query: {query[:100]}...")
+        logger.debug(f"Retrieving for query: {query[:100]}... (hybrid={use_hybrid})")
 
+        if use_hybrid:
+            child_chunks = self._hybrid_search(
+                query=query,
+                top_k=top_k,
+                metadata_filter=metadata_filter,
+                bm25_weight=bm25_weight
+            )
+        else:
+            # Pure semantic search (original method)
+            child_chunks = self._semantic_search(
+                query=query,
+                top_k=top_k,
+                metadata_filter=metadata_filter
+            )
+
+        logger.info(f"Retrieved {len(child_chunks)} child chunks")
+
+        # Expand to parents if requested
+        parent_chunks = []
+        if expand_to_parents and child_chunks:
+            parent_chunks = self._expand_to_parents(child_chunks, parent_limit)
+
+        return child_chunks, parent_chunks
+
+    def _semantic_search(
+        self,
+        query: str,
+        top_k: int,
+        metadata_filter: Dict[str, Any] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Pure semantic search using embeddings.
+
+        Args:
+            query: Query text
+            top_k: Number of results
+            metadata_filter: Optional metadata filter
+
+        Returns:
+            List of child chunk results
+        """
         # Generate query embedding
         query_embedding = self.embedding_model.encode(
             query,
@@ -229,17 +275,107 @@ class ParentChildDocumentStore:
                 "text": child_results['documents'][0][i],
                 "metadata": child_results['metadatas'][0][i],
                 "distance": child_results['distances'][0][i],
-                "score": 1.0 / (1.0 + child_results['distances'][0][i])  # Convert distance to similarity score
+                "score": 1.0 / (1.0 + child_results['distances'][0][i]),
+                "retrieval_method": "semantic"
             })
 
-        logger.info(f"Retrieved {len(child_chunks)} child chunks")
+        return child_chunks
 
-        # Expand to parents if requested
-        parent_chunks = []
-        if expand_to_parents and child_chunks:
-            parent_chunks = self._expand_to_parents(child_chunks, parent_limit)
+    def _hybrid_search(
+        self,
+        query: str,
+        top_k: int,
+        metadata_filter: Dict[str, Any] = None,
+        bm25_weight: float = 0.5
+    ) -> List[Dict[str, Any]]:
+        """
+        Hybrid search combining BM25 (keyword) and semantic (embedding) search.
 
-        return child_chunks, parent_chunks
+        Uses weighted score fusion:
+        final_score = (bm25_weight * bm25_score) + ((1 - bm25_weight) * semantic_score)
+
+        Args:
+            query: Query text
+            top_k: Number of results to return
+            metadata_filter: Optional metadata filter
+            bm25_weight: Weight for BM25 scores (0.0-1.0)
+
+        Returns:
+            List of child chunk results sorted by fused score
+        """
+        logger.debug(f"Running hybrid search: BM25_weight={bm25_weight}")
+
+        # Step 1: Get all child chunks for BM25
+        # (We need all chunks to build BM25 index - could cache this for performance)
+        all_chunks = self.child_collection.get(
+            where=metadata_filter if metadata_filter else None,
+            include=["documents", "metadatas"]
+        )
+
+        if not all_chunks['ids']:
+            logger.warning("No chunks found in collection")
+            return []
+
+        # Step 2: Build BM25 index
+        tokenized_corpus = [doc.lower().split() for doc in all_chunks['documents']]
+        bm25 = BM25Okapi(tokenized_corpus)
+
+        # Step 3: Get BM25 scores
+        tokenized_query = query.lower().split()
+        bm25_scores = bm25.get_scores(tokenized_query)
+
+        # Normalize BM25 scores to 0-1 range
+        if max(bm25_scores) > 0:
+            bm25_scores_normalized = bm25_scores / max(bm25_scores)
+        else:
+            bm25_scores_normalized = bm25_scores
+
+        # Step 4: Get semantic search scores (fetch more for fusion)
+        semantic_results = self._semantic_search(
+            query=query,
+            top_k=min(top_k * 3, len(all_chunks['ids'])),  # Get 3x for better fusion
+            metadata_filter=metadata_filter
+        )
+
+        # Create semantic scores lookup
+        semantic_scores = {
+            result['id']: result['score']
+            for result in semantic_results
+        }
+
+        # Step 5: Fuse scores
+        fused_results = []
+        for i, chunk_id in enumerate(all_chunks['ids']):
+            # BM25 score (already normalized)
+            bm25_score = float(bm25_scores_normalized[i])
+
+            # Semantic score (0 if not in semantic results)
+            semantic_score = semantic_scores.get(chunk_id, 0.0)
+
+            # Weighted fusion
+            fused_score = (bm25_weight * bm25_score) + ((1 - bm25_weight) * semantic_score)
+
+            fused_results.append({
+                "id": chunk_id,
+                "text": all_chunks['documents'][i],
+                "metadata": all_chunks['metadatas'][i],
+                "score": fused_score,
+                "bm25_score": bm25_score,
+                "semantic_score": semantic_score,
+                "retrieval_method": "hybrid"
+            })
+
+        # Step 6: Sort by fused score and return top_k
+        fused_results.sort(key=lambda x: x['score'], reverse=True)
+        top_results = fused_results[:top_k]
+
+        logger.info(
+            f"Hybrid search: top result BM25={top_results[0]['bm25_score']:.3f}, "
+            f"semantic={top_results[0]['semantic_score']:.3f}, "
+            f"fused={top_results[0]['score']:.3f}"
+        )
+
+        return top_results
 
     def _expand_to_parents(
         self,
