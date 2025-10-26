@@ -307,6 +307,12 @@ class SemanticChunker:
         """
         Extract sections from markdown text based on headers.
 
+        Handles Docling's multi-line format where section numbers and titles
+        appear on separate lines:
+            1.0
+            Purpose
+            Content...
+
         Args:
             markdown_text: Markdown formatted text
 
@@ -323,11 +329,16 @@ class SemanticChunker:
             "section_number": ""
         }
 
+        # Patterns
         header_pattern = re.compile(r'^(#{1,6})\s+(.+)$')
-        numbered_pattern = re.compile(r'^(\d+(?:\.\d+)*)\s+(.+)$')
+        # Docling puts section numbers on their own line (e.g., "1.0", "2.0", "5.1", "5.3.4")
+        section_number_pattern = re.compile(r'^(\d+(?:\.\d+)*)$')
 
-        for line in lines:
-            # Check for markdown header
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+
+            # Check for markdown header (# Title)
             header_match = header_pattern.match(line)
             if header_match:
                 # Save previous section if it has content
@@ -348,45 +359,68 @@ class SemanticChunker:
                     "level": level,
                     "section_number": ""
                 }
+                i += 1
                 continue
 
-            # Check for numbered section header (e.g., "4.3 PTO Policy")
-            numbered_match = numbered_pattern.match(line.strip())
-            if numbered_match and not current_section["text"]:  # Only if at start of section
-                section_num = numbered_match.group(1)
-                section_title = numbered_match.group(2)
+            # Check for Docling-style section number on its own line
+            section_num_match = section_number_pattern.match(line)
+            if section_num_match:
+                section_num = section_num_match.group(1)
 
-                # Save previous section
-                if current_section["text"]:
-                    sections.append(DocumentSection(
-                        title=current_section["title"],
-                        text="\n".join(current_section["text"]),
-                        level=current_section["level"],
-                        section_number=current_section["section_number"]
-                    ))
+                # Look ahead for the section title (next non-empty line)
+                section_title = ""
+                j = i + 1
+                while j < len(lines):
+                    next_line = lines[j].strip()
+                    if next_line:
+                        # Check if it's another section number (edge case: consecutive sections)
+                        if not section_number_pattern.match(next_line):
+                            section_title = next_line
+                            i = j  # Skip to the title line
+                        break
+                    j += 1
 
-                # Start new section
-                level = section_num.count('.') + 1
-                current_section = {
-                    "title": section_title,
-                    "text": [],
-                    "level": level,
-                    "section_number": section_num
-                }
-                continue
+                # If we found a title, create a new section
+                if section_title:
+                    # Save previous section
+                    if current_section["text"]:
+                        sections.append(DocumentSection(
+                            title=current_section["title"],
+                            text="\n".join(current_section["text"]),
+                            level=current_section["level"],
+                            section_number=current_section["section_number"]
+                        ))
 
-            # Add line to current section
-            if line.strip():  # Skip empty lines at start
-                current_section["text"].append(line)
+                    # Start new section
+                    level = section_num.count('.') + 1
+                    current_section = {
+                        "title": section_title,
+                        "text": [],
+                        "level": level,
+                        "section_number": section_num
+                    }
+                    i += 1
+                    continue
+
+            # Add line to current section (if not empty or if we already have content)
+            if line or current_section["text"]:
+                current_section["text"].append(lines[i])  # Use original line with whitespace
+
+            i += 1
 
         # Don't forget the last section
         if current_section["text"]:
-            sections.append(DocumentSection(
-                title=current_section["title"],
-                text="\n".join(current_section["text"]),
-                level=current_section["level"],
-                section_number=current_section["section_number"]
-            ))
+            # Clean up trailing empty lines
+            while current_section["text"] and not current_section["text"][-1].strip():
+                current_section["text"].pop()
+
+            if current_section["text"]:
+                sections.append(DocumentSection(
+                    title=current_section["title"],
+                    text="\n".join(current_section["text"]),
+                    level=current_section["level"],
+                    section_number=current_section["section_number"]
+                ))
 
         logger.info(f"Extracted {len(sections)} sections from markdown")
         return sections
