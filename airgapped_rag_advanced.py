@@ -308,6 +308,9 @@ class AdvancedRAGPipeline:
             # Generate answer with LLM
             answer = await self._generate_answer(question, context, temperature)
 
+            # Replace newlines with HTML line breaks for better display
+            answer = answer.replace('\n', '<br>')
+
             # Build citations
             citations = []
             for parent in parent_results:
@@ -496,6 +499,31 @@ async def delete_document(document_id: str):
         return result
     except Exception as e:
         logger.error(f"Error deleting document: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/documents")
+async def clear_all_documents():
+    """Clear all documents from the document store."""
+    try:
+        # Get all documents
+        documents = rag_pipeline.document_store.list_documents()
+
+        # Delete each document
+        deleted_count = 0
+        for doc in documents:
+            rag_pipeline.document_store.delete_document(doc['document_id'])
+            deleted_count += 1
+
+        logger.info(f"Cleared {deleted_count} documents from document store")
+
+        return {
+            "message": f"Successfully cleared {deleted_count} documents",
+            "deleted_count": deleted_count,
+            "statistics": rag_pipeline.document_store.get_statistics()
+        }
+    except Exception as e:
+        logger.error(f"Error clearing documents: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
