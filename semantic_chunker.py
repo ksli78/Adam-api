@@ -334,6 +334,16 @@ class SemanticChunker:
         # Docling puts section numbers on their own line (e.g., "1.0", "2.0", "5.1", "5.3.4")
         section_number_pattern = re.compile(r'^(\d+(?:\.\d+)*)$')
 
+        # Skip these patterns when looking for section titles (boilerplate)
+        boilerplate_patterns = [
+            re.compile(r'This\s+document\s+contains\s+proprietary', re.IGNORECASE),
+            re.compile(r'Unauthorized\s+use,\s+reproduction', re.IGNORECASE),
+            re.compile(r'Copyright.*All\s+rights\s+reserved', re.IGNORECASE),
+            re.compile(r'Page:\s+\d+\s+of\s+\d+', re.IGNORECASE),
+            re.compile(r'Revision:\s+[A-Z]', re.IGNORECASE),
+            re.compile(r'^[A-Z]{2}-[A-Z]{2}-\d{4}$'),  # Document IDs like EN-PO-0301
+        ]
+
         i = 0
         while i < len(lines):
             line = lines[i].strip()
@@ -367,17 +377,22 @@ class SemanticChunker:
             if section_num_match:
                 section_num = section_num_match.group(1)
 
-                # Look ahead for the section title (next non-empty line)
+                # Look ahead for the section title (next non-empty, non-boilerplate line)
                 section_title = ""
                 j = i + 1
                 while j < len(lines):
                     next_line = lines[j].strip()
                     if next_line:
                         # Check if it's another section number (edge case: consecutive sections)
-                        if not section_number_pattern.match(next_line):
+                        if section_number_pattern.match(next_line):
+                            break
+
+                        # Check if it's boilerplate (skip it)
+                        is_boilerplate = any(pattern.search(next_line) for pattern in boilerplate_patterns)
+                        if not is_boilerplate:
                             section_title = next_line
                             i = j  # Skip to the title line
-                        break
+                            break
                     j += 1
 
                 # If we found a title, create a new section
@@ -403,7 +418,9 @@ class SemanticChunker:
                     continue
 
             # Add line to current section (if not empty or if we already have content)
-            if line or current_section["text"]:
+            # But skip boilerplate lines
+            is_boilerplate = any(pattern.search(line) for pattern in boilerplate_patterns)
+            if not is_boilerplate and (line or current_section["text"]):
                 current_section["text"].append(lines[i])  # Use original line with whitespace
 
             i += 1
