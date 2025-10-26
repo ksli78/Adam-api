@@ -564,6 +564,63 @@ async def debug_document(document_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/debug/extract-markdown")
+async def debug_extract_markdown(file: UploadFile = File(...)):
+    """
+    Debug endpoint to see raw Docling markdown extraction.
+
+    Upload a PDF and see what markdown Docling produces and how it gets
+    parsed into sections. Useful for diagnosing section extraction issues.
+    """
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+
+    # Save uploaded file
+    file_path = DOCS_DIR / f"debug_{uuid.uuid4()}_{file.filename}"
+
+    try:
+        with open(file_path, 'wb') as f:
+            content = await file.read()
+            f.write(content)
+
+        # Extract with Docling
+        logger.info(f"Extracting PDF with Docling: {file.filename}")
+        docling_result = rag_pipeline.docling_converter.convert(str(file_path))
+        markdown_text = docling_result.document.export_to_markdown()
+
+        # Extract sections
+        sections = rag_pipeline.chunker.extract_sections_from_markdown(markdown_text)
+
+        result = {
+            "filename": file.filename,
+            "raw_markdown_length": len(markdown_text),
+            "raw_markdown_preview": markdown_text[:2000] + "..." if len(markdown_text) > 2000 else markdown_text,
+            "sections_extracted": len(sections),
+            "sections": [
+                {
+                    "title": s.title,
+                    "section_number": s.section_number,
+                    "level": s.level,
+                    "text_length": len(s.text),
+                    "text_preview": s.text[:500] + "..." if len(s.text) > 500 else s.text
+                }
+                for s in sections
+            ]
+        }
+
+        # Clean up debug file
+        file_path.unlink()
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error extracting markdown: {e}")
+        # Clean up on error
+        if file_path.exists():
+            file_path.unlink()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
 
