@@ -315,6 +315,11 @@ class ParentChildDocumentStore:
         Uses weighted score fusion:
         final_score = (bm25_weight * bm25_score) + ((1 - bm25_weight) * semantic_score)
 
+        Relevance filtering:
+        - Requires BM25 score >= 0.95 (strong keyword match)
+        - Requires semantic score >= 0.2 (minimum semantic relevance)
+        - Both thresholds must be met to prevent keyword-only matches
+
         Args:
             query: Query text
             top_k: Number of results to return
@@ -322,7 +327,7 @@ class ParentChildDocumentStore:
             bm25_weight: Weight for BM25 scores (0.0-1.0)
 
         Returns:
-            List of child chunk results sorted by fused score
+            List of child chunk results sorted by fused score (empty if no docs pass thresholds)
         """
         logger.debug(f"Running hybrid search: BM25_weight={bm25_weight}")
 
@@ -365,10 +370,11 @@ class ParentChildDocumentStore:
             for result in semantic_results
         }
 
-        # Step 5: Fuse scores and filter out weak BM25 matches
-        # In hybrid mode, require VERY strong keyword relevance
-        # This prevents documents with just "policy" from matching "PTO policy" queries
+        # Step 5: Fuse scores and filter out weak matches
+        # In hybrid mode, require both strong keyword AND semantic relevance
+        # This prevents documents with keyword matches but no semantic relevance
         MIN_BM25_THRESHOLD = 0.95  # Require 95% of max BM25 score (very strict!)
+        MIN_SEMANTIC_THRESHOLD = 0.2  # Require minimum semantic relevance
 
         fused_results = []
         for i, chunk_id in enumerate(all_chunks['ids']):
@@ -383,6 +389,16 @@ class ParentChildDocumentStore:
 
             # Semantic score (0 if not in semantic results)
             semantic_score = semantic_scores.get(chunk_id, 0.0)
+
+            # Skip chunks with very low semantic relevance
+            # Even with perfect keyword match, if semantic score is near 0, document is likely irrelevant
+            # Example: "Does amentum have a dress code" matching doc that only contains "Amentum"
+            if semantic_score < MIN_SEMANTIC_THRESHOLD:
+                logger.debug(
+                    f"Filtered out chunk {chunk_id[:8]}... - "
+                    f"low semantic relevance (BM25={bm25_score:.3f}, semantic={semantic_score:.3f})"
+                )
+                continue
 
             # Weighted fusion
             fused_score = (bm25_weight * bm25_score) + ((1 - bm25_weight) * semantic_score)
@@ -400,6 +416,10 @@ class ParentChildDocumentStore:
         # Step 6: Sort by fused score and return top_k
         fused_results.sort(key=lambda x: x['score'], reverse=True)
         top_results = fused_results[:top_k]
+
+        if not top_results:
+            logger.info("Hybrid search: no documents passed relevance thresholds")
+            return []
 
         logger.info(
             f"Hybrid search: top result BM25={top_results[0]['bm25_score']:.3f}, "
