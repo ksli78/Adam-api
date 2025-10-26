@@ -407,7 +407,8 @@ class ParentChildDocumentStore:
         )
 
         # Debug: Log BM25 scores of top 5 results to diagnose filtering
-        logger.info(f"Top 5 BM25 scores: {[f'{r['bm25_score']:.3f}' for r in top_results[:5]]}")
+        top5_bm25 = [r['bm25_score'] for r in top_results[:5]]
+        logger.info(f"Top 5 BM25 scores: {top5_bm25}")
 
         return top_results
 
