@@ -406,6 +406,9 @@ class ParentChildDocumentStore:
             f"fused={top_results[0]['score']:.3f}"
         )
 
+        # Debug: Log BM25 scores of top 5 results to diagnose filtering
+        logger.info(f"Top 5 BM25 scores: {[f'{r['bm25_score']:.3f}' for r in top_results[:5]]}")
+
         return top_results
 
     def _expand_to_parents(
