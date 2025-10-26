@@ -417,14 +417,14 @@ AVAILABLE DOCUMENTS:
 INSTRUCTIONS:
 1. Answer the question naturally and conversationally - no need for phrases like "Based on the provided documents" or "According to Document X"
 2. Use ONLY information from the documents above
-3. When referencing a document, use inline HTML citations in this exact format: <sub><a href="URL">FileName.pdf</a></sub>
+3. When referencing a document, use inline HTML citations in this exact format: <span><a href="URL">FileName.pdf</a></span>
 4. ONLY cite documents you actually use in your answer - don't mention documents you didn't reference
 5. Include specific details like section numbers, amounts, dates when relevant
 6. If the documents don't contain enough information, say so clearly
 7. Keep your answer focused and helpful
 
 EXAMPLE of inline citation:
-"PTO is a paid time off program<sub><a href="https://example.com/EN-PO-0301.pdf">EN-PO-0301.pdf</a></sub> that varies based on years of service."
+"PTO is a paid time off program<span><a href="https://example.com/EN-PO-0301.pdf">EN-PO-0301.pdf</a></span> that varies based on years of service."
 
 ANSWER:"""
 
