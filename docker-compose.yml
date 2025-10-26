@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  # Adam RAG API
+  adam-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: adam-api
+    ports:
+      - "8000:8000"
+    environment:
+      - DATA_DIR=/data/airgapped_rag
+      - OLLAMA_HOST=http://ollama:11434
+      - LLM_MODEL=llama3:8b
+    volumes:
+      # Persistent data storage
+      - adam-data:/data/airgapped_rag
+      # Optional: Mount local directory for development
+      # - ./data:/data/airgapped_rag
+    networks:
+      - adam-network
+    depends_on:
+      - ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Ollama LLM Service
+  # NOTE: If you already have Ollama running, you can either:
+  # 1. Use the existing Ollama container (see DOCKER_BUILD.md)
+  # 2. Comment out this section and connect to external Ollama
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - adam-network
+    restart: unless-stopped
+    # Uncomment for GPU support (requires nvidia-docker)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+networks:
+  adam-network:
+    driver: bridge
+
+volumes:
+  adam-data:
+    driver: local
+  ollama-data:
+    driver: local
