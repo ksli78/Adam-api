@@ -74,6 +74,20 @@ patterns_to_remove:
   - pattern: "Unauthorized\\s+disclosure.*?(?=\\n\\n|$)"
     description: "Disclosure warnings"
 
+  # Amentum-specific proprietary notices
+  - pattern: "This\\s+document\\s+contains\\s+proprietary\\s+information\\s+of\\s+Amentum\\..*?All\\s+rights\\s+reserved\\."
+    description: "Amentum proprietary information notice"
+    flags: ["DOTALL"]
+
+  - pattern: "Unauthorized\\s+use,\\s+reproduction,\\s+or\\s+distribution\\s+is\\s+strictly\\s+prohibited.*?(?=\\n|$)"
+    description: "Amentum unauthorized use warning"
+
+  - pattern: "Uncontrolled\\s+if\\s+printed\\..*?(?=\\n|$)"
+    description: "Uncontrolled if printed notices"
+
+  - pattern: "Before\\s+using\\s+this\\s+document,\\s+the\\s+reader\\s+is\\s+responsible.*?controlled\\s+version\\.?"
+    description: "Document version control notice"
+
 # Lines to skip entirely (case-insensitive match)
 skip_lines_containing:
   - "© Copyright"
@@ -82,6 +96,10 @@ skip_lines_containing:
   - "[COMPANY LOGO]"
   - "Internal Use Only"
   - "Do Not Distribute"
+  - "proprietary information of Amentum"
+  - "Uncontrolled if printed"
+  - "Unauthorized use, reproduction, or distribution"
+  - "serious legal consequences"
 
 # Minimum content length
 # Sections with fewer characters are discarded as noise
