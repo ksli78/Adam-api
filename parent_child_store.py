@@ -343,7 +343,7 @@ class ParentChildDocumentStore:
 
         # Step 3: Get BM25 scores (with stop word filtering)
         tokenized_query = tokenize_for_bm25(query)
-        logger.debug(f"BM25 query tokens (stop words filtered): {tokenized_query}")
+        logger.info(f"BM25 query tokens (stop words filtered): {tokenized_query}")
         bm25_scores = bm25.get_scores(tokenized_query)
 
         # Normalize BM25 scores to 0-1 range
