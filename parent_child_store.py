@@ -27,6 +27,27 @@ from semantic_chunker import Chunk
 
 logger = logging.getLogger(__name__)
 
+# English stop words for BM25 filtering
+STOP_WORDS = {
+    'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from',
+    'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on', 'that', 'the',
+    'to', 'was', 'will', 'with', 'what', 'when', 'where', 'who', 'which',
+    'how', 'this', 'these', 'those', 'can', 'could', 'should', 'would',
+    'do', 'does', 'did', 'have', 'had', 'been', 'being', 'my', 'your',
+    'their', 'our', 'his', 'her'
+}
+
+
+def tokenize_for_bm25(text: str) -> List[str]:
+    """
+    Tokenize text for BM25 search with stop word filtering.
+
+    Removes common English stop words to improve keyword matching accuracy.
+    """
+    tokens = text.lower().split()
+    # Filter out stop words and keep only meaningful terms
+    return [token for token in tokens if token not in STOP_WORDS and len(token) > 1]
+
 
 class ParentChildDocumentStore:
     """
@@ -316,12 +337,13 @@ class ParentChildDocumentStore:
             logger.warning("No chunks found in collection")
             return []
 
-        # Step 2: Build BM25 index
-        tokenized_corpus = [doc.lower().split() for doc in all_chunks['documents']]
+        # Step 2: Build BM25 index (with stop word filtering)
+        tokenized_corpus = [tokenize_for_bm25(doc) for doc in all_chunks['documents']]
         bm25 = BM25Okapi(tokenized_corpus)
 
-        # Step 3: Get BM25 scores
-        tokenized_query = query.lower().split()
+        # Step 3: Get BM25 scores (with stop word filtering)
+        tokenized_query = tokenize_for_bm25(query)
+        logger.debug(f"BM25 query tokens (stop words filtered): {tokenized_query}")
         bm25_scores = bm25.get_scores(tokenized_query)
 
         # Normalize BM25 scores to 0-1 range
