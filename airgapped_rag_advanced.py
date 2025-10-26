@@ -396,7 +396,7 @@ class QueryRequest(BaseModel):
     prompt: str
     top_k: int = 10
     parent_limit: int = 3
-    temperature: float = 0.3
+    temperature: float = 0.1  # Lower temperature for more consistent, deterministic responses
     metadata_filter: Optional[Dict[str, Any]] = None
     use_hybrid: bool = True  # Use hybrid search (BM25 + semantic) by default
     bm25_weight: float = 0.5  # Weight for BM25 vs semantic (0.5 = equal weight)

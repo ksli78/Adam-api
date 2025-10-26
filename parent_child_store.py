@@ -365,11 +365,17 @@ class ParentChildDocumentStore:
             for result in semantic_results
         }
 
-        # Step 5: Fuse scores
+        # Step 5: Fuse scores and filter out chunks with zero BM25 score
+        # (If a chunk doesn't contain ANY query keywords, exclude it from hybrid results)
         fused_results = []
         for i, chunk_id in enumerate(all_chunks['ids']):
             # BM25 score (already normalized)
             bm25_score = float(bm25_scores_normalized[i])
+
+            # Skip chunks with zero BM25 score in hybrid mode
+            # (They don't contain any query keywords, so they're likely irrelevant)
+            if bm25_weight > 0 and bm25_score == 0:
+                continue
 
             # Semantic score (0 if not in semantic results)
             semantic_score = semantic_scores.get(chunk_id, 0.0)
