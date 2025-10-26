@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 # System information and capabilities
 SYSTEM_INFO = {
     "name": "Adam",
-    "full_name": "Amentum Document Assistant and Manager",
+    "full_name": "Amentum Document and Assistance Model",
     "purpose": "AI-powered document search and question answering system",
     "capabilities": [
         "Search and retrieve information from company policy documents",
