@@ -511,6 +511,59 @@ async def health_check():
     return {"status": "healthy", "version": "2.0.0"}
 
 
+@app.get("/debug/document/{document_id}")
+async def debug_document(document_id: str):
+    """
+    Debug endpoint to inspect actual chunk content for a document.
+
+    Shows what text is stored in parent and child chunks.
+    """
+    try:
+        # Get parent chunks
+        parent_chunks = rag_pipeline.document_store.parent_collection.get(
+            where={"document_id": document_id},
+            include=["documents", "metadatas"]
+        )
+
+        # Get child chunks
+        child_chunks = rag_pipeline.document_store.child_collection.get(
+            where={"document_id": document_id},
+            include=["documents", "metadatas"]
+        )
+
+        result = {
+            "document_id": document_id,
+            "parent_chunks": {
+                "count": len(parent_chunks['ids']),
+                "chunks": [
+                    {
+                        "chunk_id": parent_chunks['ids'][i],
+                        "metadata": parent_chunks['metadatas'][i],
+                        "text": parent_chunks['documents'][i][:1000] + "..." if len(parent_chunks['documents'][i]) > 1000 else parent_chunks['documents'][i]
+                    }
+                    for i in range(len(parent_chunks['ids']))
+                ]
+            },
+            "child_chunks": {
+                "count": len(child_chunks['ids']),
+                "chunks": [
+                    {
+                        "chunk_id": child_chunks['ids'][i],
+                        "metadata": child_chunks['metadatas'][i],
+                        "text": child_chunks['documents'][i][:500] + "..." if len(child_chunks['documents'][i]) > 500 else child_chunks['documents'][i]
+                    }
+                    for i in range(min(10, len(child_chunks['ids'])))  # Limit to first 10 child chunks
+                ]
+            }
+        }
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error debugging document: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
 
