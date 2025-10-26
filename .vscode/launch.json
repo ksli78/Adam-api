@@ -7,10 +7,10 @@
       "request": "launch",
       "module": "uvicorn",
       "args": [
-        "airgapped_rag_haystack:app",
+        "airgapped_rag_advanced:app",
         "--host", "127.0.0.1",
-        "--port", "8000",
-        "--reload"
+        "--port", "8000"
+        
       ],
       "envFile": "${workspaceFolder}/.env",
       "env": {
