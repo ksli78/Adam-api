@@ -97,6 +97,13 @@ class AdvancedRAGPipeline:
         # Initialize Ollama client for answer generation
         self.ollama_client = ollama.Client(host=OLLAMA_HOST)
 
+        # Initialize query classifier for system queries
+        from query_classifier import get_query_classifier
+        self.query_classifier = get_query_classifier(
+            ollama_host=OLLAMA_HOST,
+            model_name=LLM_MODEL
+        )
+
         logger.info("Advanced RAG Pipeline initialized successfully!")
         logger.info(f"Document store stats: {self.document_store.get_statistics()}")
 
@@ -273,6 +280,32 @@ class AdvancedRAGPipeline:
         logger.info(f"Processing query: {question} (hybrid={use_hybrid}, bm25_weight={bm25_weight})")
 
         try:
+            # Step 1: Classify the query (system vs document query)
+            classification = self.query_classifier.classify_query(question)
+
+            # Step 2: Handle system queries (about the RAG system itself)
+            if classification['query_type'] == 'system':
+                logger.info(f"Detected system query, generating system response")
+                system_answer = self.query_classifier.generate_system_response(question)
+
+                # Replace newlines with HTML line breaks for display
+                system_answer = system_answer.replace('\n', '<br>')
+
+                return {
+                    "answer": system_answer,
+                    "citations": [],
+                    "retrieval_stats": {
+                        "query_type": "system",
+                        "classification_confidence": classification['confidence'],
+                        "child_chunks_retrieved": 0,
+                        "parent_chunks_used": 0,
+                        "message": "System query - no document retrieval performed"
+                    }
+                }
+
+            # Step 3: Handle document queries (normal RAG retrieval)
+            logger.info("Detected document query, proceeding with retrieval")
+
             # Retrieve with parent expansion (using hybrid search)
             child_results, parent_results = self.document_store.retrieve_with_parent_expansion(
                 query=question,
@@ -304,6 +337,8 @@ class AdvancedRAGPipeline:
                     "citations": [],
                     "confidence": 0.0,
                     "retrieval_stats": {
+                        "query_type": "document",
+                        "classification_confidence": classification.get('confidence', 'high'),
                         "child_chunks_retrieved": len(child_results),
                         "parent_chunks_used": 0,
                         "message": "Insufficient relevant documents found"
@@ -346,6 +381,8 @@ class AdvancedRAGPipeline:
                 "answer": answer,
                 "citations": citations,
                 "retrieval_stats": {
+                    "query_type": "document",
+                    "classification_confidence": classification.get('confidence', 'high'),
                     "child_chunks_retrieved": len(child_results),
                     "parent_chunks_used": len(parent_results),
                     "parent_chunk_ids": parent_chunk_ids,  # For feedback tracking
