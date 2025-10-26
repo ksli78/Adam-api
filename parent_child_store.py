@@ -366,8 +366,9 @@ class ParentChildDocumentStore:
         }
 
         # Step 5: Fuse scores and filter out weak BM25 matches
-        # In hybrid mode, require minimum keyword relevance to avoid semantic-only matches
-        MIN_BM25_THRESHOLD = 0.3  # Require at least 30% of max BM25 score
+        # In hybrid mode, require VERY strong keyword relevance
+        # This prevents documents with just "policy" from matching "PTO policy" queries
+        MIN_BM25_THRESHOLD = 0.95  # Require 95% of max BM25 score (very strict!)
 
         fused_results = []
         for i, chunk_id in enumerate(all_chunks['ids']):
@@ -375,8 +376,8 @@ class ParentChildDocumentStore:
             bm25_score = float(bm25_scores_normalized[i])
 
             # Skip chunks with weak keyword relevance in hybrid mode
-            # This filters out documents that only match common words like "policy"
-            # but miss important keywords like "PTO"
+            # With 0.95 threshold, only chunks with nearly perfect keyword matches pass
+            # This filters out documents scoring 0.937, 0.469, etc. (only common word matches)
             if bm25_weight > 0 and bm25_score < MIN_BM25_THRESHOLD:
                 continue
 
