@@ -365,6 +365,16 @@ class HaystackRAG:
         """
         Query the RAG system with hybrid retrieval and reranking.
 
+        Retrieval Process:
+        1. Hybrid search (BM25 + semantic embeddings) retrieves candidates
+        2. Cross-encoder ranker scores documents by relevance
+        3. Documents below relevance threshold (0.3) are filtered out
+        4. Remaining relevant documents are used to generate answer
+
+        The relevance threshold prevents returning documents that have keyword
+        matches but are semantically unrelated (e.g., "dress code" matching
+        documents that only mention "Amentum" but contain no dress code info).
+
         Args:
             question: User's question
             top_k: Number of documents to return after reranking
@@ -409,14 +419,31 @@ class HaystackRAG:
 
         logger.info(f"Retrieved {len(documents)} documents after reranking")
 
+        # Filter documents by relevance score
+        # Ranker scores typically range from 0-1, with higher being more relevant
+        # Filter out documents with very low scores (likely irrelevant keyword matches)
+        RELEVANCE_THRESHOLD = 0.3
+        filtered_documents = []
+
+        for doc in documents:
+            score = doc.score if hasattr(doc, 'score') else 0
+            logger.info(f"Document score: {score:.4f} - {doc.meta.get('doc_title', 'Unknown')[:50]}")
+
+            if score >= RELEVANCE_THRESHOLD:
+                filtered_documents.append(doc)
+            else:
+                logger.info(f"Filtered out document with low relevance score: {score:.4f}")
+
+        logger.info(f"Filtered to {len(filtered_documents)} documents above threshold {RELEVANCE_THRESHOLD}")
+
         # Generate answer using Ollama
-        answer = self._generate_answer(question, documents)
+        answer = self._generate_answer(question, filtered_documents)
 
         # Extract citations
-        citations = self._extract_citations(answer, documents, question)
+        citations = self._extract_citations(answer, filtered_documents, question)
 
         return {
-            "documents": documents,
+            "documents": filtered_documents,
             "answer": answer,
             "citations": citations
         }
