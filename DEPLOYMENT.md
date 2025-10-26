@@ -117,6 +117,122 @@ docker ps
 docker logs -f adam-api
 ```
 
+## 🎯 RHEL9 Production Deployment (Recommended)
+
+For RHEL9 production systems, use the dedicated deployment script for automated setup.
+
+### Prerequisites
+
+- RHEL9 server with SSH access
+- Docker installed (or script will guide you)
+- .tar.gz image files uploaded to server (via Portainer, SCP, or USB)
+
+### Method 1: Single-Script Deployment (Recommended)
+
+Transfer the script and run deployment:
+
+```bash
+# On your workstation, copy the script to production
+scp deploy-production-rhel9.sh user@production:/opt/adam/
+
+# SSH to production server
+ssh user@production
+
+# Navigate to directory with .tar.gz files
+cd /opt/adam
+
+# Run deployment script
+chmod +x deploy-production-rhel9.sh
+./deploy-production-rhel9.sh
+```
+
+The script will:
+1. Verify Docker installation and start it
+2. Prompt for directory containing .tar.gz files
+3. Import ollama-image.tar.gz and adam-api-image.tar.gz
+4. Create adam-network and volumes
+5. Start Ollama container and pull llama3:8b model
+6. Start Adam API container
+7. Configure RHEL9 firewall (ports 8000, 11434)
+8. Enable Docker on boot
+9. Run health checks
+10. Display access URLs and management commands
+
+### Method 2: Using Deployment Package
+
+If you exported the complete deployment package:
+
+```bash
+# Transfer package to production
+scp docker-export/adam-deployment-*.tar.gz user@production:/opt/adam/
+
+# On production server
+cd /opt/adam
+tar xzf adam-deployment-*.tar.gz
+cd adam-deployment-*/
+chmod +x *.sh
+./import-images.sh
+./start-services.sh
+```
+
+### Post-Deployment Management
+
+After deployment, use the management utility:
+
+```bash
+# Copy management script to production
+scp adam-manage.sh user@production:/usr/local/bin/
+chmod +x /usr/local/bin/adam-manage.sh
+
+# Run interactively
+adam-manage.sh
+
+# Or use command-line interface
+adam-manage.sh status          # Show system status
+adam-manage.sh start           # Start all services
+adam-manage.sh stop            # Stop all services
+adam-manage.sh restart         # Restart all services
+adam-manage.sh logs            # View logs (interactive)
+adam-manage.sh backup          # Backup data to /opt/adam-backups
+adam-manage.sh restore <file>  # Restore from backup
+adam-manage.sh update          # Update from new .tar.gz files
+adam-manage.sh test            # Run API tests
+adam-manage.sh firewall        # Configure firewall ports
+```
+
+### RHEL9-Specific Firewall Configuration
+
+If not automatically configured:
+
+```bash
+# Open required ports
+sudo firewall-cmd --permanent --add-port=8000/tcp
+sudo firewall-cmd --permanent --add-port=11434/tcp
+sudo firewall-cmd --reload
+
+# Verify
+sudo firewall-cmd --list-ports
+```
+
+### Verify RHEL9 Deployment
+
+```bash
+# Check all services
+docker ps
+
+# Test API health
+curl http://localhost:8000/health
+
+# Test with query
+curl -X POST http://localhost:8000/query \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt": "What is your name?"}'
+
+# View logs
+docker logs adam-api
+docker logs ollama
+```
+
 ## 🔧 Management Commands
 
 ### Development Environment
@@ -422,6 +538,63 @@ docker ps
 curl http://localhost:8000/health
 ```
 
+### Scenario 5: RHEL9 Production Deployment (Portainer Upload)
+
+```bash
+# 1. In development: Build and export
+./build-all.sh
+./export-images.sh
+
+# 2. Upload via Portainer to RHEL9 production
+# - Upload ollama-image.tar.gz
+# - Upload adam-api-image.tar.gz
+# - Upload deploy-production-rhel9.sh
+# - Upload adam-manage.sh
+
+# 3. SSH to production server
+ssh user@production-rhel9
+
+# 4. Navigate to uploaded files directory
+cd /opt/adam  # or wherever Portainer saved files
+
+# 5. Run deployment
+chmod +x deploy-production-rhel9.sh
+./deploy-production-rhel9.sh
+# Script will prompt for directory with .tar.gz files
+# Enter: . (current directory)
+
+# 6. Setup management utility
+sudo cp adam-manage.sh /usr/local/bin/
+sudo chmod +x /usr/local/bin/adam-manage.sh
+
+# 7. Use management commands
+adam-manage.sh status
+adam-manage.sh test
+```
+
+### Scenario 6: Daily Operations with Management Utility
+
+```bash
+# Check system status
+adam-manage.sh status
+
+# View logs when troubleshooting
+adam-manage.sh logs
+# Choose: 1) API  2) Ollama  3) Both
+
+# Create weekly backup
+adam-manage.sh backup /backup/weekly
+
+# Restart after configuration change
+adam-manage.sh restart
+
+# Update to new version
+# 1. Upload new .tar.gz files via Portainer
+# 2. Run update command
+adam-manage.sh update
+# Enter directory with new images
+```
+
 ## 📝 Environment Variables
 
 Can be set in scripts or passed to containers:
@@ -449,9 +622,19 @@ DATA_DIR=/data/airgapped_rag       # Data storage path
 ./export-images.sh          # Export for production
 docker logs -f adam-api     # View logs
 
-# Production
+# Production (Generic)
 ./import-images.sh          # Import images (once)
 ./start-services.sh         # Start services
 ./stop-services.sh          # Stop services
-docker logs -f adam-api     # View logs
+
+# Production (RHEL9 - Recommended)
+./deploy-production-rhel9.sh   # Complete deployment (run once)
+adam-manage.sh status          # Check system status
+adam-manage.sh start           # Start services
+adam-manage.sh stop            # Stop services
+adam-manage.sh restart         # Restart services
+adam-manage.sh logs            # View logs
+adam-manage.sh backup          # Backup data
+adam-manage.sh test            # Test API
+adam-manage.sh firewall        # Configure firewall
 ```
