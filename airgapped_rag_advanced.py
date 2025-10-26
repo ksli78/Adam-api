@@ -331,6 +331,7 @@ class AdvancedRAGPipeline:
 
             # Build citations
             citations = []
+            parent_chunk_ids = []
             for parent in parent_results:
                 citations.append({
                     "source_url": parent['metadata'].get('source_url', ''),
@@ -339,6 +340,7 @@ class AdvancedRAGPipeline:
                     "section_number": parent['metadata'].get('section_number', ''),
                     "excerpt": parent['text'][:500] + "..." if len(parent['text']) > 500 else parent['text']
                 })
+                parent_chunk_ids.append(parent['id'])
 
             result = {
                 "answer": answer,
@@ -346,7 +348,10 @@ class AdvancedRAGPipeline:
                 "retrieval_stats": {
                     "child_chunks_retrieved": len(child_results),
                     "parent_chunks_used": len(parent_results),
-                    "metadata_filter": metadata_filter
+                    "parent_chunk_ids": parent_chunk_ids,  # For feedback tracking
+                    "metadata_filter": metadata_filter,
+                    "use_hybrid": use_hybrid,
+                    "bm25_weight": bm25_weight
                 }
             }
 
@@ -427,6 +432,16 @@ class QueryResponse(BaseModel):
     answer: str
     citations: List[Dict[str, Any]]
     retrieval_stats: Dict[str, Any]
+
+
+class FeedbackRequest(BaseModel):
+    query: str
+    answer: str
+    feedback_type: str  # "good" or "bad"
+    citations: Optional[List[Dict[str, Any]]] = None
+    retrieval_stats: Optional[Dict[str, Any]] = None
+    user_comment: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 # API Endpoints
@@ -669,6 +684,123 @@ async def debug_extract_markdown(file: UploadFile = File(...)):
         # Clean up on error
         if file_path.exists():
             file_path.unlink()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/feedback")
+async def submit_feedback(request: FeedbackRequest):
+    """
+    Submit user feedback on a query-answer pair.
+
+    Feedback is used to improve future retrievals by tracking which
+    chunks produce good vs bad responses.
+
+    Args:
+        query: The original user query
+        answer: The RAG system's answer
+        feedback_type: "good" or "bad"
+        citations: Optional list of citations from the response
+        retrieval_stats: Optional retrieval statistics
+        user_comment: Optional user comment
+        session_id: Optional session identifier
+
+    Returns:
+        feedback_id and success message
+    """
+    try:
+        from feedback_store import get_feedback_store
+
+        # Extract chunk IDs from retrieval stats
+        chunks_used = []
+        if request.retrieval_stats and 'parent_chunk_ids' in request.retrieval_stats:
+            # Use parent chunk IDs from retrieval stats (most reliable)
+            chunks_used = request.retrieval_stats['parent_chunk_ids']
+        elif request.citations:
+            # Fallback: use source URLs as identifiers
+            for citation in request.citations:
+                source_url = citation.get('source_url', '')
+                if source_url:
+                    chunks_used.append(source_url)
+
+        feedback_store = get_feedback_store()
+        feedback_id = feedback_store.add_feedback(
+            query=request.query,
+            answer=request.answer,
+            feedback_type=request.feedback_type,
+            chunks_used=chunks_used,
+            citations=request.citations,
+            retrieval_stats=request.retrieval_stats,
+            retrieval_method="hybrid" if request.retrieval_stats and request.retrieval_stats.get('use_hybrid') else "semantic",
+            user_comment=request.user_comment,
+            session_id=request.session_id
+        )
+
+        logger.info(
+            f"Received {request.feedback_type} feedback (ID: {feedback_id}) "
+            f"for query: '{request.query[:50]}...'"
+        )
+
+        return {
+            "feedback_id": feedback_id,
+            "message": "Feedback submitted successfully",
+            "feedback_type": request.feedback_type
+        }
+
+    except Exception as e:
+        logger.error(f"Error submitting feedback: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/feedback/analytics")
+async def get_feedback_analytics(days: int = 30):
+    """
+    Get feedback analytics and statistics.
+
+    Shows:
+    - Overall satisfaction rate
+    - Feedback breakdown by retrieval method
+    - Best/worst performing chunks
+
+    Args:
+        days: Number of days to analyze (default: 30)
+
+    Returns:
+        Analytics summary
+    """
+    try:
+        from feedback_store import get_feedback_store
+
+        feedback_store = get_feedback_store()
+        analytics = feedback_store.get_feedback_summary(days=days)
+
+        return analytics
+
+    except Exception as e:
+        logger.error(f"Error getting feedback analytics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/feedback/recent")
+async def get_recent_feedback(limit: int = 50):
+    """
+    Get recent feedback entries.
+
+    Args:
+        limit: Maximum number of entries to return (default: 50)
+
+    Returns:
+        List of recent feedback entries
+    """
+    try:
+        from feedback_store import get_feedback_store
+
+        feedback_store = get_feedback_store()
+        recent = feedback_store.get_recent_feedback(limit=limit)
+
+        return {"feedback": recent, "count": len(recent)}
+
+    except Exception as e:
+        logger.error(f"Error getting recent feedback: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

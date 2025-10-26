@@ -27,6 +27,21 @@ from semantic_chunker import Chunk
 
 logger = logging.getLogger(__name__)
 
+# Import feedback store (lazy import to avoid circular dependencies)
+_feedback_store = None
+
+def get_feedback_store_lazy():
+    """Lazy load feedback store to avoid circular imports."""
+    global _feedback_store
+    if _feedback_store is None:
+        try:
+            from feedback_store import get_feedback_store
+            _feedback_store = get_feedback_store()
+        except Exception as e:
+            logger.warning(f"Could not load feedback store: {e}")
+            _feedback_store = None
+    return _feedback_store
+
 # English stop words for BM25 filtering
 STOP_WORDS = {
     'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from',
@@ -205,7 +220,8 @@ class ParentChildDocumentStore:
         parent_limit: int = 3,
         metadata_filter: Dict[str, Any] = None,
         use_hybrid: bool = True,
-        bm25_weight: float = 0.5
+        bm25_weight: float = 0.5,
+        use_feedback_weighting: bool = True
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Retrieve child chunks and optionally expand to parent chunks.
@@ -213,9 +229,10 @@ class ParentChildDocumentStore:
         Strategy:
         1. Run hybrid search (BM25 + Semantic) on child chunks
         2. Fuse scores with weighted combination
-        3. If expand_to_parents, get corresponding parent chunks
-        4. Deduplicate parents
-        5. Return both child and parent chunks
+        3. Apply feedback weighting to boost/demote chunks based on user feedback
+        4. If expand_to_parents, get corresponding parent chunks
+        5. Deduplicate parents
+        6. Return both child and parent chunks
 
         Args:
             query: Query text
@@ -225,6 +242,7 @@ class ParentChildDocumentStore:
             metadata_filter: Optional metadata filter for search
             use_hybrid: Whether to use hybrid (BM25 + semantic) search
             bm25_weight: Weight for BM25 scores (0.0-1.0), semantic gets (1-bm25_weight)
+            use_feedback_weighting: Whether to apply feedback-based score adjustments
 
         Returns:
             Tuple of (child_results, parent_results)
@@ -236,7 +254,8 @@ class ParentChildDocumentStore:
                 query=query,
                 top_k=top_k,
                 metadata_filter=metadata_filter,
-                bm25_weight=bm25_weight
+                bm25_weight=bm25_weight,
+                use_feedback_weighting=use_feedback_weighting
             )
         else:
             # Pure semantic search (original method)
@@ -307,13 +326,17 @@ class ParentChildDocumentStore:
         query: str,
         top_k: int,
         metadata_filter: Dict[str, Any] = None,
-        bm25_weight: float = 0.5
+        bm25_weight: float = 0.5,
+        use_feedback_weighting: bool = True
     ) -> List[Dict[str, Any]]:
         """
         Hybrid search combining BM25 (keyword) and semantic (embedding) search.
 
         Uses weighted score fusion:
         final_score = (bm25_weight * bm25_score) + ((1 - bm25_weight) * semantic_score)
+
+        Optionally applies feedback weighting:
+        feedback_adjusted_score = final_score * (1 + feedback_weight * quality_score)
 
         Relevance filtering:
         - Requires BM25 score >= 0.95 (strong keyword match)
@@ -325,6 +348,7 @@ class ParentChildDocumentStore:
             top_k: Number of results to return
             metadata_filter: Optional metadata filter
             bm25_weight: Weight for BM25 scores (0.0-1.0)
+            use_feedback_weighting: Apply feedback-based score adjustments
 
         Returns:
             List of child chunk results sorted by fused score (empty if no docs pass thresholds)
@@ -413,7 +437,40 @@ class ParentChildDocumentStore:
                 "retrieval_method": "hybrid"
             })
 
-        # Step 6: Sort by fused score and return top_k
+        # Step 6: Apply feedback weighting if enabled
+        if use_feedback_weighting and fused_results:
+            feedback_store = get_feedback_store_lazy()
+            if feedback_store:
+                # Get feedback scores for all chunks
+                chunk_ids = [r['id'] for r in fused_results]
+                feedback_scores = feedback_store.get_chunk_quality_scores(chunk_ids)
+
+                # Apply feedback weighting
+                # quality_score ranges from -1.0 (all bad) to +1.0 (all good)
+                # We use a moderate weight so feedback doesn't override relevance
+                FEEDBACK_WEIGHT = 0.15  # 15% adjustment based on feedback
+
+                for result in fused_results:
+                    chunk_id = result['id']
+                    quality_score = feedback_scores.get(chunk_id, 0.0)
+
+                    if quality_score != 0.0:
+                        # Adjust score: positive feedback boosts, negative demotes
+                        original_score = result['score']
+                        adjustment = FEEDBACK_WEIGHT * quality_score
+                        adjusted_score = original_score * (1 + adjustment)
+
+                        result['score'] = max(0.0, adjusted_score)  # Keep >= 0
+                        result['feedback_quality'] = quality_score
+                        result['feedback_adjustment'] = adjustment
+
+                        logger.debug(
+                            f"Chunk {chunk_id[:8]}... feedback adjusted: "
+                            f"{original_score:.3f} -> {adjusted_score:.3f} "
+                            f"(quality: {quality_score:.2f})"
+                        )
+
+        # Step 7: Sort by (possibly feedback-adjusted) score and return top_k
         fused_results.sort(key=lambda x: x['score'], reverse=True)
         top_results = fused_results[:top_k]
 
