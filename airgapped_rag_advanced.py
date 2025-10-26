@@ -287,7 +287,8 @@ class AdvancedRAGPipeline:
             # Check if we have insufficient results (weak matches)
             # If we retrieved very few chunks, it means the strict BM25 filter
             # eliminated most documents, indicating poor keyword match
-            MIN_CHUNKS_THRESHOLD = 3
+            # With BM25 threshold at 0.95, even 1 chunk is a strong signal
+            MIN_CHUNKS_THRESHOLD = 1
 
             if not parent_results or len(child_results) < MIN_CHUNKS_THRESHOLD:
                 logger.warning(f"Insufficient results found: {len(child_results)} child chunks")
