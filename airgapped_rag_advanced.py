@@ -292,12 +292,13 @@ class AdvancedRAGPipeline:
                     "confidence": 0.0
                 }
 
-            # Build context from parent chunks
+            # Build context from parent chunks (include URLs for inline citations)
             context_parts = []
             for i, parent in enumerate(parent_results, 1):
                 context_parts.append(
                     f"[Document {i}]\n"
                     f"Title: {parent['metadata'].get('document_title', 'Unknown')}\n"
+                    f"URL: {parent['metadata'].get('source_url', '')}\n"
                     f"Section: {parent['metadata'].get('section_title', 'Unknown')}\n"
                     f"Content:\n{parent['text']}\n"
                 )
@@ -343,20 +344,24 @@ class AdvancedRAGPipeline:
     ) -> str:
         """Generate answer using Ollama LLM."""
 
-        prompt = f"""You are a helpful assistant that answers questions based on provided documents.
+        prompt = f"""You are a friendly, helpful assistant that answers questions using information from company documents.
 
 QUESTION: {question}
 
-CONTEXT FROM DOCUMENTS:
+AVAILABLE DOCUMENTS:
 {context}
 
 INSTRUCTIONS:
-1. Read the context carefully
-2. Answer the question based ONLY on the information in the context
-3. Cite which document number you're referencing (e.g., "According to Document 1...")
-4. If the context doesn't contain enough information, say so clearly
-5. Be specific and include relevant details (section numbers, amounts, dates, etc.)
-6. Keep your answer focused and concise
+1. Answer the question naturally and conversationally - no need for phrases like "Based on the provided documents" or "According to Document X"
+2. Use ONLY information from the documents above
+3. When referencing a document, use inline HTML citations in this exact format: <sub><a href="URL">FileName.pdf</a></sub>
+4. ONLY cite documents you actually use in your answer - don't mention documents you didn't reference
+5. Include specific details like section numbers, amounts, dates when relevant
+6. If the documents don't contain enough information, say so clearly
+7. Keep your answer focused and helpful
+
+EXAMPLE of inline citation:
+"PTO is a paid time off program<sub><a href="https://example.com/EN-PO-0301.pdf">EN-PO-0301.pdf</a></sub> that varies based on years of service."
 
 ANSWER:"""
 
