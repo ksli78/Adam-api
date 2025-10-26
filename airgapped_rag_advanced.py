@@ -284,12 +284,29 @@ class AdvancedRAGPipeline:
                 bm25_weight=bm25_weight
             )
 
-            if not parent_results:
-                logger.warning("No relevant documents found")
+            # Check if we have insufficient results (weak matches)
+            # If we retrieved very few chunks, it means the strict BM25 filter
+            # eliminated most documents, indicating poor keyword match
+            MIN_CHUNKS_THRESHOLD = 3
+
+            if not parent_results or len(child_results) < MIN_CHUNKS_THRESHOLD:
+                logger.warning(f"Insufficient results found: {len(child_results)} child chunks")
                 return {
-                    "answer": "I don't have enough information to answer this question based on the available documents.",
+                    "answer": (
+                        "I couldn't find relevant information about your question in the available documents.<br><br>"
+                        "Here are some suggestions:<br>"
+                        "• Try rephrasing your question with different keywords<br>"
+                        "• Check the <a href='https://portal.amentumspacemissions.com/MS/Pages/MSDefaultHomePage.aspx' target='_blank'>Management System</a> "
+                        "where all policy documents are housed<br>"
+                        "• If you're looking for a specific policy, try including the policy number (e.g., EN-PO-XXXX)"
+                    ),
                     "citations": [],
-                    "confidence": 0.0
+                    "confidence": 0.0,
+                    "retrieval_stats": {
+                        "child_chunks_retrieved": len(child_results),
+                        "parent_chunks_used": 0,
+                        "message": "Insufficient relevant documents found"
+                    }
                 }
 
             # Build context from parent chunks (include URLs for inline citations)
