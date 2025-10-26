@@ -344,6 +344,20 @@ class SemanticChunker:
             re.compile(r'^[A-Z]{2}-[A-Z]{2}-\d{4}$'),  # Document IDs like EN-PO-0301
         ]
 
+        # Pattern to detect if a "title" is actually content (too long or starts with lowercase)
+        def is_valid_section_title(title: str) -> bool:
+            """Check if a title looks like an actual section title, not content."""
+            if not title:
+                return False
+            # Titles should be reasonably short (not full paragraphs)
+            if len(title) > 200:
+                return False
+            # Titles that start with numbers followed by period and space are likely content
+            # e.g., "5.1.1 The established standard..." is content, not a title
+            if re.match(r'^\d+\.\d+\.\d+\s+', title):
+                return False
+            return True
+
         i = 0
         while i < len(lines):
             line = lines[i].strip()
@@ -379,6 +393,7 @@ class SemanticChunker:
 
                 # Look ahead for the section title (next non-empty, non-boilerplate line)
                 section_title = ""
+                title_line_idx = i
                 j = i + 1
                 while j < len(lines):
                     next_line = lines[j].strip()
@@ -390,12 +405,14 @@ class SemanticChunker:
                         # Check if it's boilerplate (skip it)
                         is_boilerplate = any(pattern.search(next_line) for pattern in boilerplate_patterns)
                         if not is_boilerplate:
-                            section_title = next_line
-                            i = j  # Skip to the title line
+                            # Found a potential title - validate it
+                            if is_valid_section_title(next_line):
+                                section_title = next_line
+                                title_line_idx = j
                             break
                     j += 1
 
-                # If we found a title, create a new section
+                # If we found a valid title, create a new section
                 if section_title:
                     # Save previous section
                     if current_section["text"]:
@@ -414,13 +431,20 @@ class SemanticChunker:
                         "level": level,
                         "section_number": section_num
                     }
+                    i = title_line_idx + 1  # Skip past the title line
+                    continue
+                else:
+                    # No valid title found - skip this bare section number
+                    # (it's likely a formatting artifact)
                     i += 1
                     continue
 
             # Add line to current section (if not empty or if we already have content)
-            # But skip boilerplate lines
+            # But skip boilerplate lines and bare section numbers
             is_boilerplate = any(pattern.search(line) for pattern in boilerplate_patterns)
-            if not is_boilerplate and (line or current_section["text"]):
+            is_bare_section_number = section_number_pattern.match(line)
+
+            if not is_boilerplate and not is_bare_section_number and (line or current_section["text"]):
                 current_section["text"].append(lines[i])  # Use original line with whitespace
 
             i += 1
