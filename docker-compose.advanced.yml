@@ -1,0 +1,39 @@
+# Docker Compose for Advanced RAG API
+#
+# This starts ONLY the RAG API container.
+# Assumes Ollama is already running separately (via docker-compose.ollama.yml or locally).
+#
+# Usage:
+#   1. Ensure Ollama is running: docker ps | grep ollama
+#   2. Start RAG API: docker-compose -f docker-compose.advanced.yml up -d
+#   3. Check health: curl http://localhost:8000/health
+
+version: '3.8'
+
+services:
+  # Advanced RAG API (connects to existing Ollama)
+  rag-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.advanced
+    container_name: rag-api-advanced
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist document storage and ChromaDB
+      - rag_data:/data/airgapped_rag
+    environment:
+      - DATA_DIR=/data/airgapped_rag
+      # Connect to Ollama running on host
+      # On Windows/Mac Docker Desktop: host.docker.internal
+      # On Linux: Use --add-host=host.docker.internal:host-gateway
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      - LLM_MODEL=llama3:8b
+    # For Linux, uncomment to add host.docker.internal:
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+volumes:
+  rag_data:
+    driver: local

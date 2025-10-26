@@ -1,0 +1,47 @@
+# Dockerfile for Advanced RAG API
+FROM python:3.10-slim
+
+# Install system dependencies required by Docling
+# These are needed for PDF processing and OCR
+RUN apt-get update && apt-get install -y \
+    poppler-utils \
+    tesseract-ocr \
+    tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements first (for Docker layer caching)
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Download NLTK data
+# Use punkt_tab for newer NLTK versions (3.9+)
+RUN python -c "import nltk; nltk.download('punkt_tab', quiet=True)"
+
+# Copy application code
+COPY airgapped_rag_advanced.py .
+COPY document_cleaner.py .
+COPY semantic_chunker.py .
+COPY metadata_extractor.py .
+COPY parent_child_store.py .
+COPY cleaning_config.yaml .
+COPY run_advanced.py .
+
+# Create data directory
+RUN mkdir -p /data/airgapped_rag
+
+# Set environment variables
+ENV DATA_DIR=/data/airgapped_rag
+ENV OLLAMA_HOST=http://ollama:11434
+ENV LLM_MODEL=llama3:8b
+ENV PYTHONUNBUFFERED=1
+
+# Expose port
+EXPOSE 8000
+
+# Run the application
+CMD ["python", "run_advanced.py"]

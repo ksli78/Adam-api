@@ -1,0 +1,52 @@
+#
+# Docker Compose for Ollama (Development Setup)
+#
+# This runs only Ollama in Docker while you develop the API locally.
+# Use this on Windows for local development and debugging.
+#
+# Usage:
+#   docker-compose -f docker-compose.ollama.yml up -d
+#
+
+version: '3.8'
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama-airgapped-rag
+    ports:
+      - "11434:11434"
+    volumes:
+      # Persistent storage for models
+      - ollama_models:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+    restart: unless-stopped
+    networks:
+      - airgapped-rag-net
+
+    # Uncomment for GPU support (NVIDIA on Windows with WSL2)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  ollama_models:
+    name: ollama_models
+
+networks:
+  airgapped-rag-net:
+    name: airgapped-rag-net
+    driver: bridge

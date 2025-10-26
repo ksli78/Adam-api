@@ -1,3 +1,67 @@
+<<<<<<< HEAD
 .hf
 /retrieval/__pycache__/index_store.cpython-311.pyc
 /uploads/*.pdf
+/qa/__pycache__/answer.cpython-311.pyc
+/qa/__pycache__/*.pyc
+=======
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Data directories
+/data/
+/uploads/
+
+# Docker volumes
+docker-volumes/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# Hugging Face cache
+.hf/
+
+# ChromaDB
+chromadb/
+*.db
+
+# Temporary files
+*.tmp
+*.bak
+temp/
+tmp/
+
+# Export directory
+rhel9-deployment/
+>>>>>>> 4ef2e245fd0adc8490c2983395c4af99afc4e0c9
