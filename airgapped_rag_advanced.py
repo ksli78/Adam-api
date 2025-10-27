@@ -104,6 +104,12 @@ class AdvancedRAGPipeline:
             model_name=LLM_MODEL
         )
 
+        # Initialize conversation manager for contextual follow-ups
+        from conversation_manager import get_conversation_manager
+        self.conversation_manager = get_conversation_manager(
+            db_path=str(DATA_DIR / "conversations.db")
+        )
+
         logger.info("Advanced RAG Pipeline initialized successfully!")
         logger.info(f"Document store stats: {self.document_store.get_statistics()}")
 
@@ -249,6 +255,7 @@ class AdvancedRAGPipeline:
     async def query(
         self,
         question: str,
+        conversation_id: Optional[str] = None,
         top_k: int = 10,
         parent_limit: int = 3,
         metadata_filter: Dict[str, Any] = None,
@@ -257,16 +264,20 @@ class AdvancedRAGPipeline:
         bm25_weight: float = 0.5
     ) -> Dict[str, Any]:
         """
-        Query the RAG system with parent-child retrieval.
+        Query the RAG system with parent-child retrieval and conversation context.
 
         Process:
-        1. Retrieve top_k child chunks (hybrid: BM25 + semantic)
-        2. Expand to parent chunks (context)
-        3. Pass parent chunks to LLM
-        4. Generate answer with citations
+        1. Check conversation history for context
+        2. Classify query (system vs document)
+        3. Retrieve top_k child chunks (hybrid: BM25 + semantic)
+        4. Expand to parent chunks (context)
+        5. Pass parent chunks + conversation history to LLM
+        6. Generate answer with citations
+        7. Store message in conversation history
 
         Args:
             question: User's question
+            conversation_id: Optional conversation ID for context
             top_k: Number of child chunks to retrieve
             parent_limit: Maximum number of parent chunks for LLM
             metadata_filter: Optional metadata filter
@@ -275,11 +286,42 @@ class AdvancedRAGPipeline:
             bm25_weight: Weight for BM25 scores (0.0-1.0)
 
         Returns:
-            Dict with answer and citations
+            Dict with answer, citations, and conversation info
         """
-        logger.info(f"Processing query: {question} (hybrid={use_hybrid}, bm25_weight={bm25_weight})")
+        logger.info(f"Processing query: {question} (conversation_id={conversation_id}, hybrid={use_hybrid})")
 
         try:
+            # Step 0: Handle conversation ID
+            if not conversation_id:
+                conversation_id = self.conversation_manager.create_conversation()
+                logger.info(f"Created new conversation: {conversation_id}")
+
+            # Check if conversation limit reached
+            conv_limit_reached = self.conversation_manager.should_start_new_conversation(
+                conversation_id,
+                max_messages=50
+            )
+
+            if conv_limit_reached:
+                logger.warning(f"Conversation {conversation_id} reached message limit")
+
+            # Get conversation context
+            conversation_context = self.conversation_manager.get_conversation_context(
+                conversation_id,
+                max_messages=10
+            )
+            previous_chunks = self.conversation_manager.get_previous_chunks(
+                conversation_id,
+                max_messages=3
+            )
+
+            # Add user message to conversation
+            self.conversation_manager.add_message(
+                conversation_id,
+                role="user",
+                content=question
+            )
+
             # Step 1: Classify the query (system vs document query)
             classification = self.query_classifier.classify_query(question)
 
@@ -291,9 +333,19 @@ class AdvancedRAGPipeline:
                 # Replace newlines with HTML line breaks for display
                 system_answer = system_answer.replace('\n', '<br>')
 
+                # Store assistant message in conversation
+                self.conversation_manager.add_message(
+                    conversation_id,
+                    role="assistant",
+                    content=system_answer,
+                    query_type="system"
+                )
+
                 return {
                     "answer": system_answer,
                     "citations": [],
+                    "conversation_id": conversation_id,
+                    "conversation_warning": "Conversation limit reached - please start a new conversation" if conv_limit_reached else None,
                     "retrieval_stats": {
                         "query_type": "system",
                         "classification_confidence": classification['confidence'],
@@ -325,17 +377,30 @@ class AdvancedRAGPipeline:
 
             if not parent_results or len(child_results) < MIN_CHUNKS_THRESHOLD:
                 logger.warning(f"Insufficient results found: {len(child_results)} child chunks")
+
+                insufficient_answer = (
+                    "I couldn't find relevant information about your question in the available documents.<br><br>"
+                    "Here are some suggestions:<br>"
+                    "• Try rephrasing your question with different keywords<br>"
+                    "• Check the <a href='https://portal.amentumspacemissions.com/MS/Pages/MSDefaultHomePage.aspx' target='_blank'>Management System</a> "
+                    "where all policy documents are housed<br>"
+                    "• If you're looking for a specific policy, try including the policy number (e.g., EN-PO-XXXX)"
+                )
+
+                # Store assistant message in conversation
+                self.conversation_manager.add_message(
+                    conversation_id,
+                    role="assistant",
+                    content=insufficient_answer,
+                    query_type="document"
+                )
+
                 return {
-                    "answer": (
-                        "I couldn't find relevant information about your question in the available documents.<br><br>"
-                        "Here are some suggestions:<br>"
-                        "• Try rephrasing your question with different keywords<br>"
-                        "• Check the <a href='https://portal.amentumspacemissions.com/MS/Pages/MSDefaultHomePage.aspx' target='_blank'>Management System</a> "
-                        "where all policy documents are housed<br>"
-                        "• If you're looking for a specific policy, try including the policy number (e.g., EN-PO-XXXX)"
-                    ),
+                    "answer": insufficient_answer,
                     "citations": [],
                     "confidence": 0.0,
+                    "conversation_id": conversation_id,
+                    "conversation_warning": "Conversation limit reached - please start a new conversation" if conv_limit_reached else None,
                     "retrieval_stats": {
                         "query_type": "document",
                         "classification_confidence": classification.get('confidence', 'high'),
@@ -358,8 +423,13 @@ class AdvancedRAGPipeline:
 
             context = "\n\n---\n\n".join(context_parts)
 
-            # Generate answer with LLM
-            answer = await self._generate_answer(question, context, temperature)
+            # Generate answer with LLM (include conversation context)
+            answer = await self._generate_answer(
+                question,
+                context,
+                temperature,
+                conversation_context=conversation_context if conversation_context else None
+            )
 
             # Replace newlines with HTML line breaks for better display
             answer = answer.replace('\n', '<br>')
@@ -377,9 +447,22 @@ class AdvancedRAGPipeline:
                 })
                 parent_chunk_ids.append(parent['id'])
 
+            # Store assistant message in conversation with chunk IDs
+            child_chunk_ids = [c['id'] for c in child_results]
+            self.conversation_manager.add_message(
+                conversation_id,
+                role="assistant",
+                content=answer,
+                query_type="document",
+                chunk_ids=child_chunk_ids,
+                parent_chunk_ids=parent_chunk_ids
+            )
+
             result = {
                 "answer": answer,
                 "citations": citations,
+                "conversation_id": conversation_id,
+                "conversation_warning": "Conversation limit reached - please start a new conversation" if conv_limit_reached else None,
                 "retrieval_stats": {
                     "query_type": "document",
                     "classification_confidence": classification.get('confidence', 'high'),
@@ -403,13 +486,20 @@ class AdvancedRAGPipeline:
         self,
         question: str,
         context: str,
-        temperature: float
+        temperature: float,
+        conversation_context: Optional[str] = None
     ) -> str:
-        """Generate answer using Ollama LLM."""
+        """Generate answer using Ollama LLM with optional conversation context."""
 
-        prompt = f"""You are a friendly, helpful assistant that answers questions using information from company documents.
+        # Build prompt with conversation context if available
+        prompt_parts = ["You are a friendly, helpful assistant that answers questions using information from company documents."]
 
-QUESTION: {question}
+        if conversation_context:
+            prompt_parts.append(f"\n{conversation_context}\n")
+            prompt_parts.append("\nNOTE: Consider the conversation history above when answering. This may be a follow-up question.\n")
+
+        prompt_parts.append(f"""
+CURRENT QUESTION: {question}
 
 AVAILABLE DOCUMENTS:
 {context}
@@ -417,16 +507,19 @@ AVAILABLE DOCUMENTS:
 INSTRUCTIONS:
 1. Answer the question naturally and conversationally - no need for phrases like "Based on the provided documents" or "According to Document X"
 2. Use ONLY information from the documents above
-3. When referencing a document, use inline HTML citations in this exact format: <span><a href="URL">FileName.pdf</a></span>
-4. ONLY cite documents you actually use in your answer - don't mention documents you didn't reference
-5. Include specific details like section numbers, amounts, dates when relevant
-6. If the documents don't contain enough information, say so clearly
-7. Keep your answer focused and helpful
+3. If this is a follow-up question, consider the conversation history but STILL answer based on the documents
+4. When referencing a document, use inline HTML citations in this exact format: <span><a href="URL">FileName.pdf</a></span>
+5. ONLY cite documents you actually use in your answer - don't mention documents you didn't reference
+6. Include specific details like section numbers, amounts, dates when relevant
+7. If the documents don't contain enough information, say so clearly
+8. Keep your answer focused and helpful
 
 EXAMPLE of inline citation:
 "PTO is a paid time off program<span><a href="https://example.com/EN-PO-0301.pdf">EN-PO-0301.pdf</a></span> that varies based on years of service."
 
-ANSWER:"""
+ANSWER:""")
+
+        prompt = "".join(prompt_parts)
 
         logger.debug("Calling Ollama to generate answer...")
 
@@ -457,6 +550,7 @@ rag_pipeline = AdvancedRAGPipeline()
 # API Models
 class QueryRequest(BaseModel):
     prompt: str
+    conversation_id: Optional[str] = None  # For conversation context
     top_k: int = 10
     parent_limit: int = 3
     temperature: float = 0.1  # Lower temperature for more consistent, deterministic responses
@@ -521,9 +615,10 @@ async def upload_document(
 @app.post("/query", response_model=QueryResponse)
 async def query(request: QueryRequest):
     """
-    Query the RAG system with hybrid search (BM25 + semantic).
+    Query the RAG system with hybrid search (BM25 + semantic) and conversation context.
 
     Retrieves child chunks using hybrid search, expands to parents, generates answer.
+    Supports conversation history for follow-up questions.
 
     Hybrid search combines:
     - BM25: Keyword/lexical matching (good for exact terms)
@@ -531,10 +626,14 @@ async def query(request: QueryRequest):
 
     Set use_hybrid=False for pure semantic search.
     Adjust bm25_weight (0.0-1.0) to control BM25 vs semantic influence.
+
+    Pass conversation_id to maintain context across multiple questions.
+    If not provided, a new conversation will be created.
     """
     try:
         result = await rag_pipeline.query(
             question=request.prompt,
+            conversation_id=request.conversation_id,
             top_k=request.top_k,
             parent_limit=request.parent_limit,
             metadata_filter=request.metadata_filter,
@@ -721,6 +820,73 @@ async def debug_extract_markdown(file: UploadFile = File(...)):
         # Clean up on error
         if file_path.exists():
             file_path.unlink()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/conversation/new")
+async def create_conversation():
+    """
+    Create a new conversation.
+
+    Returns:
+        conversation_id for the new conversation
+    """
+    try:
+        conversation_id = rag_pipeline.conversation_manager.create_conversation()
+        return {
+            "conversation_id": conversation_id,
+            "message": "New conversation created"
+        }
+    except Exception as e:
+        logger.error(f"Error creating conversation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/conversation/{conversation_id}/history")
+async def get_conversation_history(conversation_id: str, limit: Optional[int] = None):
+    """
+    Get conversation history.
+
+    Args:
+        conversation_id: Conversation ID
+        limit: Optional limit on number of messages
+
+    Returns:
+        List of messages in the conversation
+    """
+    try:
+        history = rag_pipeline.conversation_manager.get_conversation_history(
+            conversation_id,
+            limit=limit
+        )
+        stats = rag_pipeline.conversation_manager.get_conversation_stats(conversation_id)
+
+        return {
+            "conversation_id": conversation_id,
+            "messages": history,
+            "stats": stats
+        }
+    except Exception as e:
+        logger.error(f"Error getting conversation history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/conversation/{conversation_id}/stats")
+async def get_conversation_stats(conversation_id: str):
+    """
+    Get conversation statistics.
+
+    Args:
+        conversation_id: Conversation ID
+
+    Returns:
+        Conversation stats including message count
+    """
+    try:
+        stats = rag_pipeline.conversation_manager.get_conversation_stats(conversation_id)
+        return stats
+    except Exception as e:
+        logger.error(f"Error getting conversation stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

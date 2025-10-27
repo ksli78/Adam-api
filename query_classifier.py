@@ -97,32 +97,43 @@ class QueryClassifier:
         classification_prompt = f"""You are a query classifier for a document search system named "Adam" (Amentum Document Assistant and Manager).
 
 Your job is to determine if the user is asking about:
-1. THE SYSTEM ITSELF (system query) - Questions about what Adam is, what it can do, how to use it, introductions, etc.
-2. DOCUMENT CONTENT (document query) - Questions about policies, procedures, or information that would be in company documents
+1. THE SYSTEM ITSELF (system query) - Questions specifically about what Adam/the search system is, what features it has, how to use Adam's interface
+2. DOCUMENT CONTENT (document query) - Questions about company policies, procedures, processes, or ANY information that would be found in company documents
 
 USER QUERY: "{query}"
 
-EXAMPLES OF SYSTEM QUERIES:
+CRITICAL RULES:
+- If the question is about company policies, procedures, or processes → DOCUMENT
+- If the question is "how do I" do something at the company (request PTO, submit forms, follow procedures) → DOCUMENT
+- If the question is about using or understanding company systems/processes → DOCUMENT
+- ONLY classify as SYSTEM if specifically asking about Adam's features or capabilities
+
+EXAMPLES OF SYSTEM QUERIES (asking about Adam itself):
 - "What is your name?"
 - "What can you do?"
 - "Introduce yourself"
-- "How do I use this?"
+- "How do I use this search system?"
 - "What are you?"
-- "Tell me about yourself"
+- "Tell me about yourself Adam"
 - "What kind of questions can you answer?"
-- "How does this work?"
-- "What features do you have?"
+- "How does Adam work?"
+- "What features does this system have?"
 
-EXAMPLES OF DOCUMENT QUERIES:
+EXAMPLES OF DOCUMENT QUERIES (asking about company information):
 - "What is the PTO policy?"
 - "How do I request time off?"
+- "How do I request PTO?"
+- "How do I submit a timesheet?"
 - "What are the safety procedures?"
 - "Does Amentum have a dress code?"
 - "What is the maximum PTO accrual?"
+- "How do I apply for leave?"
+- "What is the process for requesting equipment?"
+- "How do I report an incident?"
 
 Respond with ONLY ONE WORD:
-- "SYSTEM" if asking about the system itself
-- "DOCUMENT" if asking about document content
+- "SYSTEM" if asking about Adam/the search system itself
+- "DOCUMENT" if asking about company policies, procedures, or processes
 
 Your response:"""
 
