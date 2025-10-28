@@ -19,6 +19,9 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
+# Spell correction
+from spellchecker import SpellChecker
+
 # Docling for PDF extraction
 from docling.document_converter import DocumentConverter
 
@@ -110,6 +113,20 @@ class AdvancedRAGPipeline:
             db_path=str(DATA_DIR / "conversations.db")
         )
 
+        # Initialize spell checker with custom domain dictionary
+        logger.info("Initializing spell checker with custom dictionary...")
+        self.spell_checker = SpellChecker()
+        # Add domain-specific terms that should not be "corrected"
+        custom_words = {
+            'amentum', 'safeup', 'pto', 'cui', 'cto', 'itar', 'eeo', 'ada',
+            'fmla', 'osha', 'covid', 'hr', 'dod', 'nasa', 'usaf',
+            'timesheet', 'timesheets', 'mgmt', 'pdf', 'mgr', 'dept',
+            'reimbursement', 'reimbursements', 'workflow', 'workflows',
+            'onboarding', 'offboarding', 'ppe', 'sop', 'sops'
+        }
+        self.spell_checker.word_frequency.load_words(custom_words)
+        logger.info(f"Spell checker initialized with {len(custom_words)} custom terms")
+
         logger.info("Advanced RAG Pipeline initialized successfully!")
         logger.info(f"Document store stats: {self.document_store.get_statistics()}")
 
@@ -138,6 +155,70 @@ class AdvancedRAGPipeline:
             logger.info("LLM model warmed up and ready on GPU")
         except Exception as e:
             logger.warning(f"Model warmup failed (non-critical): {e}")
+
+    def _correct_spelling(self, text: str) -> tuple[str, List[tuple[str, str]]]:
+        """
+        Correct spelling errors in the query text.
+
+        Fixes typos and misspellings while preserving domain-specific terms
+        like "SafeUp", "Amentum", company acronyms, etc.
+
+        Args:
+            text: Query text that may contain typos
+
+        Returns:
+            Tuple of (corrected_text, list of (original, correction) pairs)
+        """
+        import string
+
+        # Split into words while preserving punctuation positions
+        words = text.split()
+        corrections = []
+        corrected_words = []
+
+        for word in words:
+            # Strip punctuation for spell checking but remember it
+            stripped = word.strip(string.punctuation)
+            leading_punct = word[:len(word) - len(word.lstrip(string.punctuation))]
+            trailing_punct = word[len(word.rstrip(string.punctuation)):]
+
+            # Skip very short words (likely ok) and words with numbers
+            if len(stripped) <= 2 or any(c.isdigit() for c in stripped):
+                corrected_words.append(word)
+                continue
+
+            # Check if word is misspelled (case-insensitive check)
+            if stripped.lower() not in self.spell_checker:
+                # Get correction
+                correction = self.spell_checker.correction(stripped.lower())
+
+                # Only apply correction if we found one and it's different
+                if correction and correction != stripped.lower():
+                    # Preserve original capitalization pattern
+                    if stripped.isupper():
+                        corrected = correction.upper()
+                    elif stripped[0].isupper():
+                        corrected = correction.capitalize()
+                    else:
+                        corrected = correction
+
+                    corrections.append((stripped, corrected))
+                    corrected_words.append(leading_punct + corrected + trailing_punct)
+                else:
+                    # No good correction found, keep original
+                    corrected_words.append(word)
+            else:
+                # Word is spelled correctly
+                corrected_words.append(word)
+
+        corrected_text = ' '.join(corrected_words)
+
+        # Log corrections if any were made
+        if corrections:
+            corrections_str = ', '.join([f"'{orig}' → '{corr}'" for orig, corr in corrections])
+            logger.info(f"Spell corrections applied: {corrections_str}")
+
+        return corrected_text, corrections
 
     async def ingest_document(
         self,
@@ -348,6 +429,17 @@ class AdvancedRAGPipeline:
                 content=question
             )
 
+            # Step 0.5: Apply spell correction to fix typos and misspellings
+            # This happens before expansion and classification
+            # Example: "saftey policy>" → "safety policy>"
+            corrected_question, spelling_corrections = self._correct_spelling(question)
+
+            # Use corrected question for all downstream processing
+            if spelling_corrections:
+                logger.info(f"Original query: '{question}'")
+                logger.info(f"Corrected query: '{corrected_question}'")
+                question = corrected_question
+
             # Step 1: Expand query with conversation context FIRST (before classification)
             # This is critical: "How is it calculated?" → "How is PTO calculated?"
             # Must happen before classification so expanded query is classified correctly
@@ -391,7 +483,8 @@ class AdvancedRAGPipeline:
                         "classification_confidence": classification['confidence'],
                         "child_chunks_retrieved": 0,
                         "parent_chunks_used": 0,
-                        "message": "System query - no document retrieval performed"
+                        "message": "System query - no document retrieval performed",
+                        "spelling_corrections": [{"from": orig, "to": corr} for orig, corr in spelling_corrections] if spelling_corrections else None
                     }
                 }
 
@@ -446,7 +539,8 @@ class AdvancedRAGPipeline:
                         "classification_confidence": classification.get('confidence', 'high'),
                         "child_chunks_retrieved": len(child_results),
                         "parent_chunks_used": 0,
-                        "message": "Insufficient relevant documents found"
+                        "message": "Insufficient relevant documents found",
+                        "spelling_corrections": [{"from": orig, "to": corr} for orig, corr in spelling_corrections] if spelling_corrections else None
                     }
                 }
 
@@ -511,7 +605,8 @@ class AdvancedRAGPipeline:
                     "parent_chunk_ids": parent_chunk_ids,  # For feedback tracking
                     "metadata_filter": metadata_filter,
                     "use_hybrid": use_hybrid,
-                    "bm25_weight": bm25_weight
+                    "bm25_weight": bm25_weight,
+                    "spelling_corrections": [{"from": orig, "to": corr} for orig, corr in spelling_corrections] if spelling_corrections else None
                 }
             }
 
