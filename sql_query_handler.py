@@ -162,12 +162,19 @@ class SQLQueryHandler:
             "7. Use proper date formatting for MS SQL Server (e.g., YEAR(HireDate) = 2024)",
             "8. Return ONLY the SQL query on a SINGLE LINE - no explanations, no markdown, no quotes, no line breaks in the SQL",
             "9. Format: SELECT TOP 1000 columns FROM table WHERE conditions",
+            "\nCOMMON QUERY PATTERNS:",
+            "- 'contact info' or 'contact information' = Email, WorkPhone, MailCode, BuildingCode, Room, OnOffSite",
+            "- 'location' or 'where does X sit' = BuildingCode, Room, OnOffSite",
+            "- 'phone' = WorkPhone",
+            "- 'email' = Email or CompanyEmail",
             f"\nEXAMPLE QUERIES:\n{examples}"
         ]
 
         if conversation_context:
             prompt_parts.insert(1, f"\nCONVERSATION HISTORY:\n{conversation_context}")
-            prompt_parts.append("\nNOTE: This may be a follow-up question. Use conversation context to understand references.")
+            prompt_parts.append("\nNOTE: This is a follow-up question. Use conversation context to understand references.")
+            prompt_parts.append("IMPORTANT: If the conversation shows a [Context: Name: ...] section, use the EXACT name from there, not the user's original query.")
+            prompt_parts.append("Example: If context shows 'Name: Wang Hinrichs' but user originally typed 'Wanb', use 'Wang' in the WHERE clause.")
 
         prompt_parts.append(f"\nUSER QUESTION: {user_query}")
         prompt_parts.append("\nGENERATED SQL:")
@@ -375,22 +382,31 @@ class SQLQueryHandler:
             )
 
         # Build prompt for result formatting
-        prompt = f"""You are a helpful assistant formatting database query results into natural language.
+        prompt = f"""You are formatting database query results. Provide a direct, concise answer.
 
 USER QUESTION: {user_query}
 
 QUERY RESULTS ({rows_returned} rows):
 {json.dumps(results[:10], indent=2)}
 
-INSTRUCTIONS:
-1. Present the results in a clear, conversational format
-2. If 1-3 results: Show detailed information for each
-3. If 4-10 results: Show a summary list with key details
-4. If 10+ results: Show summary and mention total count
-5. For dates, format them nicely (e.g., "January 15, 2020")
-6. Omit null or empty fields
-7. Use line breaks for readability
-8. Do NOT include sensitive information like AnnualRate in the response
+CRITICAL RULES:
+1. Answer directly - NO preambles like "Here is..." or "The answer is..."
+2. NO closing statements like "Let me know..." or notes about result count
+3. For 1-3 results: Show all key details clearly
+4. For 4-10 results: List them concisely
+5. For 10+ results: Summarize with count
+6. Format dates nicely (e.g., "January 15, 2020")
+7. Skip null/empty fields
+8. NEVER include sensitive fields (AnnualRate)
+9. Be conversational but concise
+
+GOOD EXAMPLE:
+Question: "What is John Smith's phone number?"
+Answer: "John Smith's phone number is 555-1234."
+
+BAD EXAMPLE:
+Question: "What is John Smith's phone number?"
+Answer: "Here is the answer: John Smith's phone number is 555-1234. Let me know if you need anything else!"
 
 FORMATTED ANSWER:"""
 

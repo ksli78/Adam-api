@@ -200,10 +200,31 @@ async def query_employee_directory(request: SQLQueryRequest):
             )
 
         # Store assistant message in conversation
+        # Include structured result data for better follow-up question handling
+        conversation_content = formatted_answer
+
+        # Append structured context (hidden from user, visible to LLM for follow-ups)
+        if results and len(results) <= 3:
+            # For small result sets, include key fields for follow-up context
+            context_data = []
+            for result in results:
+                # Extract key identifying fields
+                person_info = []
+                if 'FirstName' in result and 'LastName' in result:
+                    person_info.append(f"Name: {result.get('FirstName', '')} {result.get('LastName', '')}")
+                if 'PersonnelId' in result:
+                    person_info.append(f"ID: {result.get('PersonnelId', '')}")
+
+                if person_info:
+                    context_data.append(" | ".join(person_info))
+
+            if context_data:
+                conversation_content += "\n\n[Context: " + "; ".join(context_data) + "]"
+
         conversation_manager.add_message(
             conversation_id,
             role="assistant",
-            content=formatted_answer,
+            content=conversation_content,
             query_type="employee_directory"
         )
 
