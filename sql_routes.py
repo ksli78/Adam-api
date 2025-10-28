@@ -109,6 +109,7 @@ async def query_employee_directory(request: SQLQueryRequest):
                 user_query=request.prompt,
                 conversation_context=conversation_context if conversation_context else None
             )
+            logger.info(f"Generated SQL for '{request.prompt}': {sql_query}")
         except ValueError as e:
             error_message = (
                 "I'm having trouble understanding that query. Could you rephrase it? "

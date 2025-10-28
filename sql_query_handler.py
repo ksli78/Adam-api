@@ -179,26 +179,32 @@ class SQLQueryHandler:
         if conversation_context:
             prompt_parts.insert(1, f"\nCONVERSATION HISTORY:\n{conversation_context}")
             prompt_parts.append("\nFOLLOW-UP QUERY RULES:")
-            prompt_parts.append("1. Use conversation context to understand references (he, she, his, her, etc.)")
-            prompt_parts.append("2. Context may show multiple people: [Context: Employee: John Smith | Manager: Jane Doe]")
-            prompt_parts.append("3. Determine WHO the user is asking about based on conversation flow:")
+            prompt_parts.append("1. PRIORITY: If the question explicitly mentions a person's name, use that name (ignore pronouns)")
+            prompt_parts.append("   Example: 'When did Khaled get hired?' → Use 'Khaled' even if context has multiple people")
+            prompt_parts.append("2. For pronouns (he, she, his, her): Use conversation context to determine who")
+            prompt_parts.append("3. Context may show multiple people: [Context: Employee: John Smith | Manager: Jane Doe]")
+            prompt_parts.append("4. For pronoun references, determine WHO based on:")
             prompt_parts.append("   - If previous Q was 'Who does X report to?', then 'his phone' = Manager's phone")
             prompt_parts.append("   - If previous Q was 'Who reports to X?', then 'their info' = Employees' info")
             prompt_parts.append("   - Use the person who was the SUBJECT/ANSWER of the previous question")
-            prompt_parts.append("4. Extract names from context and use in FirstName/LastName WHERE clauses")
-            prompt_parts.append("5. NEVER use UserName field in WHERE clauses - ONLY use FirstName, LastName, or EmpNo")
+            prompt_parts.append("5. Extract names from context OR question and use in FirstName/LastName WHERE clauses")
+            prompt_parts.append("6. NEVER use UserName field in WHERE clauses - ONLY use FirstName, LastName, or EmpNo")
             prompt_parts.append("\nEXAMPLES:")
+            prompt_parts.append("Context: [Employee: Khaled Sliman | Manager: Colly Edgeworth]")
+            prompt_parts.append("Q: 'When did Khaled get hired?' ← Khaled explicitly mentioned!")
+            prompt_parts.append("→ Use Khaled (not Colly), include HireDate")
+            prompt_parts.append("→ SQL: SELECT TOP 1000 FirstName, LastName, HireDate FROM vwPersonnelAll WHERE (FirstName LIKE '%Khaled%' AND LastName LIKE '%Sliman%') AND IsTerminated = 0")
+            prompt_parts.append("")
             prompt_parts.append("Context: [Employee: Wang Hinrichs (EmpNo: 12345) | Manager: John Boss]")
             prompt_parts.append("Previous Q: 'Who does Wang report to?' Answer: 'Wang reports to John Boss...'")
-            prompt_parts.append("Current Q: 'What is his phone number?'")
-            prompt_parts.append("→ 'his' refers to John Boss (the manager, who was the answer)")
-            prompt_parts.append("→ SQL: WHERE (FirstName LIKE '%John%' AND LastName LIKE '%Boss%')")
+            prompt_parts.append("Q: 'What is his phone number?' ← pronoun 'his', no name mentioned")
+            prompt_parts.append("→ 'his' refers to John Boss (the manager was the answer)")
+            prompt_parts.append("→ SQL: SELECT TOP 1000 FirstName, LastName, WorkPhone FROM vwPersonnelAll WHERE (FirstName LIKE '%John%' AND LastName LIKE '%Boss%') AND IsTerminated = 0")
             prompt_parts.append("")
             prompt_parts.append("Context: [Employee: Wang Hinrichs (EmpNo: 12345)]")
-            prompt_parts.append("Previous Q: 'Find Wang Hinrichs'")
-            prompt_parts.append("Current Q: 'What is his email?'")
-            prompt_parts.append("→ 'his' refers to Wang Hinrichs (the subject)")
-            prompt_parts.append("→ SQL: WHERE (FirstName LIKE '%Wang%' AND LastName LIKE '%Hinrichs%')")
+            prompt_parts.append("Q: 'What is his email?' ← pronoun 'his', only one person in context")
+            prompt_parts.append("→ 'his' refers to Wang Hinrichs")
+            prompt_parts.append("→ SQL: SELECT TOP 1000 FirstName, LastName, Email FROM vwPersonnelAll WHERE (FirstName LIKE '%Wang%' AND LastName LIKE '%Hinrichs%') AND IsTerminated = 0")
 
         prompt_parts.append(f"\nUSER QUESTION: {user_query}")
         prompt_parts.append("\nGENERATED SQL:")
@@ -415,8 +421,9 @@ QUERY RESULTS ({rows_returned} rows):
 
 CRITICAL FORMATTING RULES:
 1. Answer directly - NO preambles like "Here is..." or "The answer is..."
-2. NO closing statements like "Let me know..." or notes about result count
-3. Use HTML formatting:
+2. DO NOT repeat or echo the user's question in your answer
+3. NO closing statements like "Let me know..." or notes about result count
+4. Use HTML formatting:
    - Line breaks: Use newlines (\\n) - will be converted to <br> automatically
    - Email addresses: Format as <a href="mailto:EMAIL">EMAIL</a>
    - Phone numbers: Format as <a href="tel:PHONE">PHONE</a>
@@ -430,7 +437,12 @@ CRITICAL FORMATTING RULES:
 FORMATTING EXAMPLES:
 
 Question: "What is John Smith's email?"
-Answer: "John Smith's email is <a href=\\"mailto:john.smith@company.com\\">john.smith@company.com</a>."
+GOOD: "John Smith's email is <a href=\\"mailto:john.smith@company.com\\">john.smith@company.com</a>."
+BAD: "What is John Smith's email?\\n\\nJohn Smith's email is..." ← DON'T repeat question!
+
+Question: "What department does Colly work for?"
+GOOD: "Colly works for the ENGR-003 department."
+BAD: "What department does Colly work for? Colly works for..." ← DON'T echo question!
 
 Question: "What is John Smith's contact info?"
 Answer: "John Smith's contact information:\\n\\nEmail: <a href=\\"mailto:john.smith@company.com\\">john.smith@company.com</a>\\nPhone: <a href=\\"tel:555-1234\\">555-1234</a>\\nBuilding: 101, Room: 205\\nMail Code: MC-1234"
