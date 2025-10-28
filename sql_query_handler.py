@@ -167,6 +167,12 @@ class SQLQueryHandler:
             "- 'location' or 'where does X sit' = BuildingCode, Room, OnOffSite",
             "- 'phone' = WorkPhone",
             "- 'email' = Email or CompanyEmail",
+            "- 'who does X report to' or 'X's manager/supervisor' = Use LEFT JOIN with SupervisorNo = EmpNo",
+            "- 'who reports to X' or 'X's direct reports' = Use INNER JOIN with employee.SupervisorNo = manager.EmpNo",
+            "\nJOIN SYNTAX:",
+            "- Use table aliases: FROM vwPersonnelAll e LEFT JOIN vwPersonnelAll s ON e.SupervisorNo = s.EmpNo",
+            "- Concatenate names: e.FirstName + ' ' + e.LastName as Employee",
+            "- Check IsTerminated = 0 for BOTH tables in joins",
             f"\nEXAMPLE QUERIES:\n{examples}"
         ]
 

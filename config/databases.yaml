@@ -158,6 +158,15 @@ employee_directory:
         - question: "Who works in building 101?"
           sql: "SELECT TOP 1000 PersonnelId, FirstName, LastName, Email, BuildingCode, Room FROM vwPersonnelAll WHERE BuildingCode = '101' AND IsTerminated = 0"
 
+        - question: "Who does John Smith report to?"
+          sql: "SELECT TOP 1000 e.FirstName + ' ' + e.LastName as Employee, s.FirstName + ' ' + s.LastName as Supervisor, s.Email as SupervisorEmail, s.WorkPhone as SupervisorPhone, s.BusinessTitle as SupervisorTitle FROM vwPersonnelAll e LEFT JOIN vwPersonnelAll s ON e.SupervisorNo = s.EmpNo WHERE (e.FirstName LIKE '%John%' AND e.LastName LIKE '%Smith%') AND e.IsTerminated = 0"
+
+        - question: "Who reports to Jane Doe?"
+          sql: "SELECT TOP 1000 e.FirstName + ' ' + e.LastName as Employee, e.Email, e.WorkPhone, e.BusinessTitle FROM vwPersonnelAll e INNER JOIN vwPersonnelAll m ON e.SupervisorNo = m.EmpNo WHERE (m.FirstName LIKE '%Jane%' AND m.LastName LIKE '%Doe%') AND e.IsTerminated = 0 AND m.IsTerminated = 0 ORDER BY e.LastName"
+
+        - question: "Show John Smith and his manager"
+          sql: "SELECT TOP 1000 e.FirstName as EmployeeFirstName, e.LastName as EmployeeLastName, e.Email as EmployeeEmail, e.BusinessTitle as EmployeeTitle, s.FirstName as ManagerFirstName, s.LastName as ManagerLastName, s.Email as ManagerEmail, s.BusinessTitle as ManagerTitle FROM vwPersonnelAll e LEFT JOIN vwPersonnelAll s ON e.SupervisorNo = s.EmpNo WHERE (e.FirstName LIKE '%John%' AND e.LastName LIKE '%Smith%') AND e.IsTerminated = 0"
+
 # Purchasing system configuration (disabled for now)
 purchasing_system:
   enabled: false
