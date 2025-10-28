@@ -178,9 +178,15 @@ class SQLQueryHandler:
 
         if conversation_context:
             prompt_parts.insert(1, f"\nCONVERSATION HISTORY:\n{conversation_context}")
-            prompt_parts.append("\nNOTE: This is a follow-up question. Use conversation context to understand references.")
-            prompt_parts.append("IMPORTANT: If the conversation shows a [Context: Name: ...] section, use the EXACT name from there, not the user's original query.")
-            prompt_parts.append("Example: If context shows 'Name: Wang Hinrichs' but user originally typed 'Wanb', use 'Wang' in the WHERE clause.")
+            prompt_parts.append("\nFOLLOW-UP QUERY RULES:")
+            prompt_parts.append("1. Use conversation context to understand references (he, she, his, her, etc.)")
+            prompt_parts.append("2. If [Context: Name: ...] exists, use that EXACT name in FirstName/LastName WHERE clauses")
+            prompt_parts.append("3. If [Context: EmpNo: ...] exists, you can use that in WHERE clause: WHERE e.EmpNo = 'value'")
+            prompt_parts.append("4. NEVER use UserName field in WHERE clauses - ONLY use FirstName, LastName, or EmpNo")
+            prompt_parts.append("5. Example: Context shows 'Name: Wang Hinrichs | EmpNo: 12345'")
+            prompt_parts.append("   Good: WHERE (e.FirstName LIKE '%Wang%' AND e.LastName LIKE '%Hinrichs%')")
+            prompt_parts.append("   Good: WHERE e.EmpNo = '12345'")
+            prompt_parts.append("   BAD: WHERE e.UserName LIKE '%Wang%' - NEVER DO THIS!")
 
         prompt_parts.append(f"\nUSER QUESTION: {user_query}")
         prompt_parts.append("\nGENERATED SQL:")

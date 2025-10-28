@@ -210,9 +210,32 @@ async def query_employee_directory(request: SQLQueryRequest):
             for result in results:
                 # Extract key identifying fields
                 person_info = []
+
+                # Try to extract name from various fields
+                name = None
                 if 'FirstName' in result and 'LastName' in result:
-                    person_info.append(f"Name: {result.get('FirstName', '')} {result.get('LastName', '')}")
-                if 'PersonnelId' in result:
+                    # Separate fields (standard queries)
+                    first = result.get('FirstName', '')
+                    last = result.get('LastName', '')
+                    if first or last:
+                        name = f"{first} {last}".strip()
+                elif 'Employee' in result:
+                    # Concatenated field from JOIN queries
+                    name = result.get('Employee')
+                elif 'EmployeeFirstName' in result and 'EmployeeLastName' in result:
+                    # Aliased fields from JOIN queries
+                    first = result.get('EmployeeFirstName', '')
+                    last = result.get('EmployeeLastName', '')
+                    if first or last:
+                        name = f"{first} {last}".strip()
+
+                if name:
+                    person_info.append(f"Name: {name}")
+
+                # Include EmpNo if available (more reliable than UserName)
+                if 'EmpNo' in result:
+                    person_info.append(f"EmpNo: {result.get('EmpNo', '')}")
+                elif 'PersonnelId' in result:
                     person_info.append(f"ID: {result.get('PersonnelId', '')}")
 
                 if person_info:
