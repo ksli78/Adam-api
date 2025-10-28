@@ -163,10 +163,10 @@ class SQLQueryHandler:
             "8. Return ONLY the SQL query on a SINGLE LINE - no explanations, no markdown, no quotes, no line breaks in the SQL",
             "9. Format: SELECT TOP 1000 columns FROM table WHERE conditions",
             "\nCOMMON QUERY PATTERNS:",
-            "- 'contact info' or 'contact information' = Email, WorkPhone, MailCode, BuildingCode, Room, OnOffSite",
-            "- 'location' or 'where does X sit' = BuildingCode, Room, OnOffSite",
-            "- 'phone' = WorkPhone",
-            "- 'email' = Email or CompanyEmail",
+            "- 'contact info' or 'contact information' = FirstName, LastName, Email, WorkPhone, MailCode, BuildingCode, Room, OnOffSite",
+            "- 'location' or 'where does X sit' = FirstName, LastName, BuildingCode, Room, OnOffSite",
+            "- 'phone' = FirstName, LastName, WorkPhone",
+            "- 'email' = FirstName, LastName, Email or CompanyEmail",
             "- 'who does X report to' or 'X's manager/supervisor' = Use LEFT JOIN with SupervisorNo = EmpNo",
             "- 'who reports to X' or 'X's direct reports' = Use INNER JOIN with employee.SupervisorNo = manager.EmpNo",
             "\nJOIN SYNTAX:",
@@ -388,31 +388,37 @@ class SQLQueryHandler:
             )
 
         # Build prompt for result formatting
-        prompt = f"""You are formatting database query results. Provide a direct, concise answer.
+        prompt = f"""You are formatting database query results. Provide a direct, concise answer with HTML formatting.
 
 USER QUESTION: {user_query}
 
 QUERY RESULTS ({rows_returned} rows):
 {json.dumps(results[:10], indent=2)}
 
-CRITICAL RULES:
+CRITICAL FORMATTING RULES:
 1. Answer directly - NO preambles like "Here is..." or "The answer is..."
 2. NO closing statements like "Let me know..." or notes about result count
-3. For 1-3 results: Show all key details clearly
-4. For 4-10 results: List them concisely
-5. For 10+ results: Summarize with count
-6. Format dates nicely (e.g., "January 15, 2020")
+3. Use HTML formatting:
+   - Line breaks: Use newlines (\\n) - will be converted to <br> automatically
+   - Email addresses: Format as <a href="mailto:EMAIL">EMAIL</a>
+   - Phone numbers: Format as <a href="tel:PHONE">PHONE</a>
+   - Lists: Use bullet points with • or numbered lists
+4. For names: ALWAYS use FirstName and LastName fields, NEVER use UserName field
+5. For contact info: Present as a formatted list with labels
+6. For dates: Format nicely (e.g., "January 15, 2020")
 7. Skip null/empty fields
 8. NEVER include sensitive fields (AnnualRate)
-9. Be conversational but concise
 
-GOOD EXAMPLE:
-Question: "What is John Smith's phone number?"
-Answer: "John Smith's phone number is 555-1234."
+FORMATTING EXAMPLES:
 
-BAD EXAMPLE:
-Question: "What is John Smith's phone number?"
-Answer: "Here is the answer: John Smith's phone number is 555-1234. Let me know if you need anything else!"
+Question: "What is John Smith's email?"
+Answer: "John Smith's email is <a href=\\"mailto:john.smith@company.com\\">john.smith@company.com</a>."
+
+Question: "What is John Smith's contact info?"
+Answer: "John Smith's contact information:\\n\\nEmail: <a href=\\"mailto:john.smith@company.com\\">john.smith@company.com</a>\\nPhone: <a href=\\"tel:555-1234\\">555-1234</a>\\nBuilding: 101, Room: 205\\nMail Code: MC-1234"
+
+Question: "List employees in Engineering"
+Answer: "Engineering department employees:\\n\\n• John Smith - <a href=\\"mailto:john@company.com\\">john@company.com</a>\\n• Jane Doe - <a href=\\"mailto:jane@company.com\\">jane@company.com</a>\\n• Bob Johnson - <a href=\\"mailto:bob@company.com\\">bob@company.com</a>"
 
 FORMATTED ANSWER:"""
 
@@ -429,10 +435,13 @@ FORMATTED ANSWER:"""
 
             answer = response['response'].strip()
 
+            # Convert newlines to HTML line breaks for better display
+            answer = answer.replace('\n', '<br>')
+
             # Add overflow warning if results were truncated
             if metadata.get('truncated', False) and rows_returned >= max_rows:
                 answer += (
-                    f"\n\nNote: This query matched more than {max_rows} results. "
+                    f"<br><br>Note: This query matched more than {max_rows} results. "
                     f"Only the first {max_rows} are shown. "
                     f"Please contact IT if you need a complete dataset with all results."
                 )
@@ -450,24 +459,48 @@ FORMATTED ANSWER:"""
         results: List[Dict[str, Any]],
         metadata: Dict[str, Any]
     ) -> str:
-        """Fallback simple result formatting if LLM fails."""
+        """Fallback simple result formatting if LLM fails. Uses HTML formatting."""
         rows_returned = metadata['rows_returned']
 
         if rows_returned == 0:
             return "No results found."
 
-        answer_parts = [f"Found {rows_returned} result(s):\n"]
+        answer_parts = [f"Found {rows_returned} result(s):<br><br>"]
 
         for i, result in enumerate(results[:10], 1):
-            answer_parts.append(f"\n{i}.")
+            # Build name from FirstName and LastName if available
+            name = None
+            if 'FirstName' in result and 'LastName' in result:
+                first = result.get('FirstName', '')
+                last = result.get('LastName', '')
+                if first or last:
+                    name = f"{first} {last}".strip()
+
+            if name:
+                answer_parts.append(f"<strong>{i}. {name}</strong><br>")
+            else:
+                answer_parts.append(f"<strong>{i}.</strong><br>")
+
             for key, value in result.items():
-                if value is not None and key != 'AnnualRate':  # Skip sensitive fields
-                    answer_parts.append(f"  {key}: {value}")
+                # Skip null values, sensitive fields, and name fields (already shown)
+                if value is None or key == 'AnnualRate' or key in ['FirstName', 'LastName']:
+                    continue
+
+                # Format emails as mailto links
+                if key in ['Email', 'CompanyEmail', 'SupervisorEmail', 'ManagerEmail', 'EmployeeEmail']:
+                    answer_parts.append(f"  {key}: <a href=\"mailto:{value}\">{value}</a><br>")
+                # Format phone numbers as tel links
+                elif key in ['WorkPhone', 'Phone', 'SupervisorPhone', 'ManagerPhone']:
+                    answer_parts.append(f"  {key}: <a href=\"tel:{value}\">{value}</a><br>")
+                else:
+                    answer_parts.append(f"  {key}: {value}<br>")
+
+            answer_parts.append("<br>")  # Spacing between results
 
         if rows_returned > 10:
-            answer_parts.append(f"\n... and {rows_returned - 10} more results")
+            answer_parts.append(f"<br>... and {rows_returned - 10} more results")
 
-        return "\n".join(answer_parts)
+        return "".join(answer_parts)
 
 
 def get_sql_query_handler(database_name: str, **kwargs) -> SQLQueryHandler:
