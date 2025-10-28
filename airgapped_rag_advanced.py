@@ -348,10 +348,24 @@ class AdvancedRAGPipeline:
                 content=question
             )
 
-            # Step 1: Classify the query (system vs document query)
-            classification = self.query_classifier.classify_query(question)
+            # Step 1: Expand query with conversation context FIRST (before classification)
+            # This is critical: "How is it calculated?" → "How is PTO calculated?"
+            # Must happen before classification so expanded query is classified correctly
+            expanded_query = question
+            if conversation_context:
+                expanded_query = await self._expand_query_with_context(
+                    question,
+                    conversation_context
+                )
+                logger.info(f"Expanded query: '{question}' -> '{expanded_query}'")
 
-            # Step 2: Handle system queries (about the RAG system itself)
+            # Step 2: Classify the EXPANDED query (system vs document query)
+            # Use expanded query so "How is PTO calculated?" is correctly classified as document
+            # Without expansion, "How is it calculated?" might be misclassified as system query
+            query_to_classify = expanded_query if conversation_context else question
+            classification = self.query_classifier.classify_query(query_to_classify)
+
+            # Step 3: Handle system queries (about the RAG system itself)
             if classification['query_type'] == 'system':
                 logger.info(f"Detected system query, generating system response")
                 system_answer = self.query_classifier.generate_system_response(question)
@@ -380,15 +394,6 @@ class AdvancedRAGPipeline:
                         "message": "System query - no document retrieval performed"
                     }
                 }
-
-            # Step 3: Expand query with conversation context (for follow-up questions)
-            expanded_query = question
-            if conversation_context:
-                expanded_query = await self._expand_query_with_context(
-                    question,
-                    conversation_context
-                )
-                logger.info(f"Expanded query: '{question}' -> '{expanded_query}'")
 
             # Step 4: Handle document queries (normal RAG retrieval)
             logger.info("Detected document query, proceeding with retrieval")
