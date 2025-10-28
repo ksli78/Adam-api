@@ -1,0 +1,447 @@
+"""
+SQL Query Handler for Text-to-SQL functionality
+
+Handles natural language to SQL conversion, query execution,
+and result formatting for MS SQL Server databases.
+"""
+
+import logging
+import pyodbc
+import yaml
+import os
+import json
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Tuple
+import ollama
+
+logger = logging.getLogger(__name__)
+
+
+class SQLQueryHandler:
+    """
+    Handles SQL query generation, validation, execution, and result formatting.
+
+    Uses LLM for text-to-SQL conversion and result formatting.
+    Includes security validations to prevent SQL injection and unsafe queries.
+    """
+
+    def __init__(
+        self,
+        database_name: str,
+        config_path: str = "config/databases.yaml",
+        ollama_host: str = "http://localhost:11434",
+        model_name: str = "llama3:8b"
+    ):
+        """
+        Initialize SQL query handler.
+
+        Args:
+            database_name: Name of database config (e.g., "employee_directory")
+            config_path: Path to databases.yaml configuration file
+            ollama_host: Ollama server URL
+            model_name: LLM model name for text-to-SQL and formatting
+        """
+        self.database_name = database_name
+        self.model_name = model_name
+        self.ollama_client = ollama.Client(host=ollama_host)
+
+        # Load configuration
+        config_file = Path(config_path)
+        if not config_file.exists():
+            raise FileNotFoundError(f"Database configuration not found: {config_path}")
+
+        with open(config_file, 'r') as f:
+            all_configs = yaml.safe_load(f)
+
+        if database_name not in all_configs:
+            raise ValueError(f"Database '{database_name}' not found in configuration")
+
+        self.config = all_configs[database_name]
+
+        if not self.config.get('enabled', False):
+            raise ValueError(f"Database '{database_name}' is not enabled in configuration")
+
+        # Extract configuration
+        self.connection_config = self.config['connection']
+        self.security_config = self.config['security']
+        self.schema_config = self.config['schema']
+
+        # Get password from environment variable
+        password_env = self.connection_config.get('password_env')
+        if password_env:
+            self.password = os.getenv(password_env)
+            if not self.password:
+                logger.warning(f"Environment variable {password_env} not set, password will be empty")
+                self.password = ""
+        else:
+            self.password = self.connection_config.get('password', "")
+
+        logger.info(f"SQLQueryHandler initialized for {database_name}")
+        logger.info(f"Max rows: {self.security_config['max_rows']}, Timeout: {self.security_config['query_timeout_seconds']}s")
+
+    def _get_connection_string(self) -> str:
+        """Build MS SQL Server connection string."""
+        conn_cfg = self.connection_config
+
+        if conn_cfg.get('use_windows_auth', False):
+            # Windows Authentication
+            conn_str = (
+                f"DRIVER={{{conn_cfg['driver']}}};"
+                f"SERVER={conn_cfg['server']},{conn_cfg['port']};"
+                f"DATABASE={conn_cfg['database']};"
+                f"Trusted_Connection=yes;"
+            )
+        else:
+            # SQL Server Authentication
+            conn_str = (
+                f"DRIVER={{{conn_cfg['driver']}}};"
+                f"SERVER={conn_cfg['server']},{conn_cfg['port']};"
+                f"DATABASE={conn_cfg['database']};"
+                f"UID={conn_cfg['user']};"
+                f"PWD={self.password};"
+            )
+
+        return conn_str
+
+    def _build_schema_context(self) -> str:
+        """Build schema context for LLM prompt."""
+        schema_parts = []
+
+        for table_name, table_info in self.schema_config.items():
+            schema_parts.append(f"\nTable/View: {table_name}")
+            schema_parts.append(f"Description: {table_info.get('description', 'N/A')}")
+            schema_parts.append("Columns:")
+
+            for col in table_info.get('columns', []):
+                sensitive = " (SENSITIVE - avoid unless necessary)" if col.get('sensitive', False) else ""
+                schema_parts.append(f"  - {col['name']} ({col['type']}): {col.get('description', 'N/A')}{sensitive}")
+
+        return "\n".join(schema_parts)
+
+    def _build_example_queries(self) -> str:
+        """Build example queries for LLM prompt."""
+        examples = []
+
+        for table_name, table_info in self.schema_config.items():
+            for example in table_info.get('example_queries', []):
+                examples.append(f"\nQuestion: {example['question']}")
+                examples.append(f"SQL: {example['sql']}")
+
+        return "\n".join(examples)
+
+    async def generate_sql(
+        self,
+        user_query: str,
+        conversation_context: Optional[str] = None
+    ) -> Tuple[str, Dict[str, Any]]:
+        """
+        Generate SQL query from natural language using LLM.
+
+        Args:
+            user_query: User's natural language query
+            conversation_context: Optional conversation history for follow-up questions
+
+        Returns:
+            Tuple of (sql_query, metadata)
+        """
+        schema_context = self._build_schema_context()
+        examples = self._build_example_queries()
+        max_rows = self.security_config['max_rows']
+
+        # Build prompt for text-to-SQL
+        prompt_parts = [
+            "You are a SQL query generator for MS SQL Server. Convert natural language questions to SQL queries.",
+            f"\nDATABASE SCHEMA:\n{schema_context}",
+            "\nCRITICAL RULES:",
+            "1. ONLY generate SELECT queries (no INSERT, UPDATE, DELETE, DROP, ALTER, etc.)",
+            f"2. ALWAYS add 'TOP {max_rows}' to limit results",
+            "3. ALWAYS exclude terminated employees by adding 'WHERE IsTerminated = 0' unless specifically asked about terminated employees",
+            "4. Use LIKE with wildcards (%) for text searches: WHERE FirstName LIKE '%John%'",
+            "5. For name searches, search both FirstName AND LastName",
+            "6. Avoid selecting sensitive columns (AnnualRate) unless the question specifically asks for it",
+            "7. Use proper date formatting for MS SQL Server (e.g., YEAR(HireDate) = 2024)",
+            "8. Return ONLY the SQL query - no explanations, no markdown, no quotes",
+            f"\nEXAMPLE QUERIES:\n{examples}"
+        ]
+
+        if conversation_context:
+            prompt_parts.insert(1, f"\nCONVERSATION HISTORY:\n{conversation_context}")
+            prompt_parts.append("\nNOTE: This may be a follow-up question. Use conversation context to understand references.")
+
+        prompt_parts.append(f"\nUSER QUESTION: {user_query}")
+        prompt_parts.append("\nGENERATED SQL:")
+
+        prompt = "\n".join(prompt_parts)
+
+        logger.debug(f"Generating SQL for query: {user_query}")
+
+        try:
+            response = self.ollama_client.generate(
+                model=self.model_name,
+                prompt=prompt,
+                options={
+                    "temperature": 0.1,  # Low temperature for consistent SQL generation
+                    "num_predict": 200
+                },
+                keep_alive=-1
+            )
+
+            sql = response['response'].strip()
+
+            # Clean up the response - remove markdown, quotes, explanations
+            sql = sql.replace('```sql', '').replace('```', '')
+            sql = sql.strip('"').strip("'").strip()
+
+            # Take only the first line if multiple lines (some LLMs add explanations)
+            if '\n' in sql:
+                lines = [line.strip() for line in sql.split('\n') if line.strip()]
+                # Find the line that starts with SELECT
+                for line in lines:
+                    if line.upper().startswith('SELECT'):
+                        sql = line
+                        break
+
+            logger.info(f"Generated SQL: {sql}")
+
+            return sql, {"model": self.model_name, "temperature": 0.1}
+
+        except Exception as e:
+            logger.error(f"Error generating SQL: {e}", exc_info=True)
+            raise ValueError(f"Failed to generate SQL query: {str(e)}")
+
+    def validate_sql(self, sql: str) -> Dict[str, Any]:
+        """
+        Validate SQL query for security and safety.
+
+        Args:
+            sql: SQL query to validate
+
+        Returns:
+            Dict with 'valid' (bool) and 'error' (str) if invalid
+        """
+        sql_upper = sql.upper()
+
+        # 1. Check for forbidden keywords (anything that modifies data)
+        forbidden_keywords = [
+            'DROP', 'DELETE', 'UPDATE', 'INSERT', 'ALTER', 'CREATE',
+            'TRUNCATE', 'GRANT', 'REVOKE', 'EXEC', 'EXECUTE', 'SP_',
+            'XP_', 'BACKUP', 'RESTORE', 'SHUTDOWN'
+        ]
+
+        for keyword in forbidden_keywords:
+            if keyword in sql_upper:
+                return {
+                    "valid": False,
+                    "error": f"Query contains forbidden keyword: {keyword}"
+                }
+
+        # 2. Must start with SELECT
+        if not sql_upper.strip().startswith('SELECT'):
+            return {
+                "valid": False,
+                "error": "Only SELECT queries are allowed"
+            }
+
+        # 3. Must have TOP clause for MS SQL Server
+        if 'TOP' not in sql_upper:
+            return {
+                "valid": False,
+                "error": f"Query must include TOP {self.security_config['max_rows']} clause"
+            }
+
+        # 4. Check only allowed tables/views are referenced
+        allowed_tables = self.security_config.get('allowed_tables', []) + \
+                        self.security_config.get('allowed_views', [])
+
+        # Simple check - look for FROM clause
+        if 'FROM' in sql_upper:
+            from_part = sql_upper.split('FROM')[1].split('WHERE')[0].split('ORDER')[0].split('GROUP')[0]
+            table_referenced = False
+            for table in allowed_tables:
+                if table.upper() in from_part:
+                    table_referenced = True
+                    break
+
+            if not table_referenced:
+                return {
+                    "valid": False,
+                    "error": f"Query must reference only allowed tables: {', '.join(allowed_tables)}"
+                }
+
+        return {"valid": True}
+
+    def execute_sql(self, sql: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """
+        Execute SQL query and return results.
+
+        Args:
+            sql: Validated SQL query
+
+        Returns:
+            Tuple of (results list, metadata dict)
+        """
+        logger.info(f"Executing SQL: {sql}")
+
+        try:
+            conn_str = self._get_connection_string()
+            timeout = self.security_config['query_timeout_seconds']
+
+            # Connect to database
+            conn = pyodbc.connect(conn_str, timeout=timeout)
+            cursor = conn.cursor()
+
+            # Set query timeout
+            cursor.execute(f"SET LOCK_TIMEOUT {timeout * 1000}")  # Convert to milliseconds
+
+            # Execute query
+            cursor.execute(sql)
+
+            # Fetch results
+            columns = [column[0] for column in cursor.description]
+            rows = cursor.fetchall()
+
+            # Convert to list of dicts
+            results = []
+            for row in rows:
+                result_dict = {}
+                for i, column in enumerate(columns):
+                    value = row[i]
+                    # Convert datetime objects to strings
+                    if hasattr(value, 'isoformat'):
+                        value = value.isoformat()
+                    result_dict[column] = value
+                results.append(result_dict)
+
+            cursor.close()
+            conn.close()
+
+            metadata = {
+                "rows_returned": len(results),
+                "columns": columns,
+                "truncated": len(results) >= self.security_config['max_rows']
+            }
+
+            logger.info(f"Query returned {len(results)} rows")
+
+            return results, metadata
+
+        except pyodbc.Error as e:
+            logger.error(f"Database error executing SQL: {e}", exc_info=True)
+            raise RuntimeError(f"Database error: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error executing SQL: {e}", exc_info=True)
+            raise RuntimeError(f"Query execution failed: {str(e)}")
+
+    async def format_results(
+        self,
+        user_query: str,
+        results: List[Dict[str, Any]],
+        metadata: Dict[str, Any]
+    ) -> str:
+        """
+        Format SQL results as natural language using LLM.
+
+        Args:
+            user_query: Original user question
+            results: Query results
+            metadata: Query metadata (row count, etc.)
+
+        Returns:
+            Natural language formatted answer
+        """
+        rows_returned = metadata['rows_returned']
+        max_rows = self.security_config['max_rows']
+
+        # Handle no results
+        if rows_returned == 0:
+            return (
+                "I couldn't find any results matching your query. "
+                "Please check your search terms and try again."
+            )
+
+        # Build prompt for result formatting
+        prompt = f"""You are a helpful assistant formatting database query results into natural language.
+
+USER QUESTION: {user_query}
+
+QUERY RESULTS ({rows_returned} rows):
+{json.dumps(results[:10], indent=2)}
+
+INSTRUCTIONS:
+1. Present the results in a clear, conversational format
+2. If 1-3 results: Show detailed information for each
+3. If 4-10 results: Show a summary list with key details
+4. If 10+ results: Show summary and mention total count
+5. For dates, format them nicely (e.g., "January 15, 2020")
+6. Omit null or empty fields
+7. Use line breaks for readability
+8. Do NOT include sensitive information like AnnualRate in the response
+
+FORMATTED ANSWER:"""
+
+        try:
+            response = self.ollama_client.generate(
+                model=self.model_name,
+                prompt=prompt,
+                options={
+                    "temperature": 0.3,
+                    "num_predict": 500
+                },
+                keep_alive=-1
+            )
+
+            answer = response['response'].strip()
+
+            # Add overflow warning if results were truncated
+            if metadata.get('truncated', False) and rows_returned >= max_rows:
+                answer += (
+                    f"\n\nNote: This query matched more than {max_rows} results. "
+                    f"Only the first {max_rows} are shown. "
+                    f"Please contact IT if you need a complete dataset with all results."
+                )
+
+            return answer
+
+        except Exception as e:
+            logger.error(f"Error formatting results: {e}", exc_info=True)
+            # Fallback to simple formatting
+            return self._simple_format_results(user_query, results, metadata)
+
+    def _simple_format_results(
+        self,
+        user_query: str,
+        results: List[Dict[str, Any]],
+        metadata: Dict[str, Any]
+    ) -> str:
+        """Fallback simple result formatting if LLM fails."""
+        rows_returned = metadata['rows_returned']
+
+        if rows_returned == 0:
+            return "No results found."
+
+        answer_parts = [f"Found {rows_returned} result(s):\n"]
+
+        for i, result in enumerate(results[:10], 1):
+            answer_parts.append(f"\n{i}.")
+            for key, value in result.items():
+                if value is not None and key != 'AnnualRate':  # Skip sensitive fields
+                    answer_parts.append(f"  {key}: {value}")
+
+        if rows_returned > 10:
+            answer_parts.append(f"\n... and {rows_returned - 10} more results")
+
+        return "\n".join(answer_parts)
+
+
+def get_sql_query_handler(database_name: str, **kwargs) -> SQLQueryHandler:
+    """
+    Factory function to get SQL query handler.
+
+    Args:
+        database_name: Name of database (e.g., 'employee_directory')
+        **kwargs: Additional arguments for SQLQueryHandler
+
+    Returns:
+        SQLQueryHandler instance
+    """
+    return SQLQueryHandler(database_name=database_name, **kwargs)

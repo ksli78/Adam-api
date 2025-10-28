@@ -66,6 +66,10 @@ app = FastAPI(
     version="2.0.0"
 )
 
+# Include SQL query routes
+from sql_routes import sql_router
+app.include_router(sql_router)
+
 
 class AdvancedRAGPipeline:
     """
