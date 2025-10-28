@@ -160,7 +160,8 @@ class SQLQueryHandler:
             "5. For name searches, search both FirstName AND LastName",
             "6. Avoid selecting sensitive columns (AnnualRate) unless the question specifically asks for it",
             "7. Use proper date formatting for MS SQL Server (e.g., YEAR(HireDate) = 2024)",
-            "8. Return ONLY the SQL query - no explanations, no markdown, no quotes",
+            "8. Return ONLY the SQL query on a SINGLE LINE - no explanations, no markdown, no quotes, no line breaks in the SQL",
+            "9. Format: SELECT TOP 1000 columns FROM table WHERE conditions",
             f"\nEXAMPLE QUERIES:\n{examples}"
         ]
 
@@ -192,14 +193,28 @@ class SQLQueryHandler:
             sql = sql.replace('```sql', '').replace('```', '')
             sql = sql.strip('"').strip("'").strip()
 
-            # Take only the first line if multiple lines (some LLMs add explanations)
+            # Handle multi-line SQL or SQL with explanations
             if '\n' in sql:
                 lines = [line.strip() for line in sql.split('\n') if line.strip()]
-                # Find the line that starts with SELECT
+
+                # Find where SELECT starts and capture everything until end or semicolon
+                sql_lines = []
+                capturing = False
                 for line in lines:
                     if line.upper().startswith('SELECT'):
-                        sql = line
-                        break
+                        capturing = True
+
+                    if capturing:
+                        sql_lines.append(line)
+                        # Stop if we hit a semicolon or explanation text
+                        if ';' in line or line.lower().startswith(('note:', 'explanation:', 'this query')):
+                            break
+
+                # Join the SQL lines into a single line
+                if sql_lines:
+                    sql = ' '.join(sql_lines)
+                    # Remove trailing semicolon if present
+                    sql = sql.rstrip(';').strip()
 
             logger.info(f"Generated SQL: {sql}")
 
