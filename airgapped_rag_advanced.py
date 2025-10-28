@@ -381,12 +381,21 @@ class AdvancedRAGPipeline:
                     }
                 }
 
-            # Step 3: Handle document queries (normal RAG retrieval)
+            # Step 3: Expand query with conversation context (for follow-up questions)
+            expanded_query = question
+            if conversation_context:
+                expanded_query = await self._expand_query_with_context(
+                    question,
+                    conversation_context
+                )
+                logger.info(f"Expanded query: '{question}' -> '{expanded_query}'")
+
+            # Step 4: Handle document queries (normal RAG retrieval)
             logger.info("Detected document query, proceeding with retrieval")
 
-            # Retrieve with parent expansion (using hybrid search)
+            # Retrieve with parent expansion (using expanded query for better context)
             child_results, parent_results = self.document_store.retrieve_with_parent_expansion(
-                query=question,
+                query=expanded_query,  # Use expanded query for better retrieval
                 top_k=top_k,
                 expand_to_parents=True,
                 parent_limit=parent_limit,
@@ -507,6 +516,79 @@ class AdvancedRAGPipeline:
         except Exception as e:
             logger.error(f"Error processing query: {e}", exc_info=True)
             raise
+
+    async def _expand_query_with_context(
+        self,
+        question: str,
+        conversation_context: str
+    ) -> str:
+        """
+        Expand a query using conversation context to make it standalone.
+
+        Converts follow-up questions like "How do I request it?" into
+        "How do I request PTO?" by using the conversation history.
+
+        Args:
+            question: User's current question (may have pronouns/references)
+            conversation_context: Previous conversation messages
+
+        Returns:
+            Expanded, standalone query suitable for retrieval
+        """
+        expansion_prompt = f"""{conversation_context}
+
+CURRENT QUESTION: {question}
+
+TASK: Rewrite the current question to be a standalone search query that includes all necessary context from the conversation history.
+
+RULES:
+1. Replace pronouns (it, that, this, them) with the actual subjects from conversation
+2. Replace vague references with specific terms
+3. Keep the query concise and focused on the key topic
+4. If the question is already standalone, return it unchanged
+5. Only output the rewritten question - nothing else
+
+EXAMPLES:
+Conversation: "User: What is the PTO policy?"
+Current: "How do I request it?"
+Rewritten: "How do I request PTO?"
+
+Conversation: "User: Does Amentum have a dress code?"
+Current: "What about shoes?"
+Rewritten: "What is the dress code policy for shoes at Amentum?"
+
+Conversation: "User: What are the safety procedures?"
+Current: "Tell me more"
+Rewritten: "Tell me more about safety procedures"
+
+REWRITTEN QUESTION:"""
+
+        try:
+            response = self.ollama_client.generate(
+                model=LLM_MODEL,
+                prompt=expansion_prompt,
+                options={
+                    "temperature": 0.1,  # Low temperature for consistent expansion
+                    "num_predict": 50
+                },
+                keep_alive=-1
+            )
+
+            expanded = response['response'].strip()
+
+            # Remove quotes if LLM added them
+            expanded = expanded.strip('"').strip("'")
+
+            # If expansion failed or is empty, return original
+            if not expanded or len(expanded) < 3:
+                logger.warning(f"Query expansion failed, using original: {question}")
+                return question
+
+            return expanded
+
+        except Exception as e:
+            logger.error(f"Error expanding query: {e}")
+            return question  # Fallback to original query
 
     async def _generate_answer(
         self,
