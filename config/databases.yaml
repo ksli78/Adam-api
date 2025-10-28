@@ -144,19 +144,19 @@ employee_directory:
       # Example queries to help the LLM understand common patterns
       example_queries:
         - question: "Find John Smith"
-          sql: "SELECT PersonnelId, FirstName, LastName, Email, WorkPhone, BusinessTitle, HomeDept FROM vwPersonnelAll WHERE (FirstName LIKE '%John%' AND LastName LIKE '%Smith%') AND IsTerminated = 0"
+          sql: "SELECT TOP 1000 PersonnelId, FirstName, LastName, Email, WorkPhone, BusinessTitle, HomeDept FROM vwPersonnelAll WHERE (FirstName LIKE '%John%' AND LastName LIKE '%Smith%') AND IsTerminated = 0"
 
         - question: "List all employees in Engineering department"
-          sql: "SELECT PersonnelId, FirstName, LastName, Email, BusinessTitle, HomeDept FROM vwPersonnelAll WHERE HomeDept LIKE '%Engineering%' AND IsTerminated = 0 ORDER BY LastName"
+          sql: "SELECT TOP 1000 PersonnelId, FirstName, LastName, Email, BusinessTitle, HomeDept FROM vwPersonnelAll WHERE HomeDept LIKE '%Engineering%' AND IsTerminated = 0 ORDER BY LastName"
 
         - question: "Show employees hired in 2024"
-          sql: "SELECT PersonnelId, FirstName, LastName, Email, HireDate, BusinessTitle FROM vwPersonnelAll WHERE YEAR(HireDate) = 2024 AND IsTerminated = 0 ORDER BY HireDate DESC"
+          sql: "SELECT TOP 1000 PersonnelId, FirstName, LastName, Email, HireDate, BusinessTitle FROM vwPersonnelAll WHERE YEAR(HireDate) = 2024 AND IsTerminated = 0 ORDER BY HireDate DESC"
 
         - question: "Find employees with 'Manager' in their title"
-          sql: "SELECT PersonnelId, FirstName, LastName, Email, BusinessTitle, HomeDept FROM vwPersonnelAll WHERE BusinessTitle LIKE '%Manager%' AND IsTerminated = 0"
+          sql: "SELECT TOP 1000 PersonnelId, FirstName, LastName, Email, BusinessTitle, HomeDept FROM vwPersonnelAll WHERE BusinessTitle LIKE '%Manager%' AND IsTerminated = 0"
 
         - question: "Who works in building 101?"
-          sql: "SELECT PersonnelId, FirstName, LastName, Email, BuildingCode, Room FROM vwPersonnelAll WHERE BuildingCode = '101' AND IsTerminated = 0"
+          sql: "SELECT TOP 1000 PersonnelId, FirstName, LastName, Email, BuildingCode, Room FROM vwPersonnelAll WHERE BuildingCode = '101' AND IsTerminated = 0"
 
 # Purchasing system configuration (disabled for now)
 purchasing_system:
