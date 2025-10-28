@@ -208,38 +208,65 @@ async def query_employee_directory(request: SQLQueryRequest):
             # For small result sets, include key fields for follow-up context
             context_data = []
             for result in results:
-                # Extract key identifying fields
-                person_info = []
+                # Extract key identifying fields for MULTIPLE people (employee, manager, etc.)
+                entities = []
 
-                # Try to extract name from various fields
-                name = None
+                # --- Extract EMPLOYEE information ---
+                employee_name = None
+                employee_id = None
+
                 if 'FirstName' in result and 'LastName' in result:
                     # Separate fields (standard queries)
                     first = result.get('FirstName', '')
                     last = result.get('LastName', '')
                     if first or last:
-                        name = f"{first} {last}".strip()
+                        employee_name = f"{first} {last}".strip()
                 elif 'Employee' in result:
                     # Concatenated field from JOIN queries
-                    name = result.get('Employee')
+                    employee_name = result.get('Employee')
                 elif 'EmployeeFirstName' in result and 'EmployeeLastName' in result:
                     # Aliased fields from JOIN queries
                     first = result.get('EmployeeFirstName', '')
                     last = result.get('EmployeeLastName', '')
                     if first or last:
-                        name = f"{first} {last}".strip()
+                        employee_name = f"{first} {last}".strip()
 
-                if name:
-                    person_info.append(f"Name: {name}")
-
-                # Include EmpNo if available (more reliable than UserName)
+                # Get employee ID
                 if 'EmpNo' in result:
-                    person_info.append(f"EmpNo: {result.get('EmpNo', '')}")
+                    employee_id = result.get('EmpNo')
                 elif 'PersonnelId' in result:
-                    person_info.append(f"ID: {result.get('PersonnelId', '')}")
+                    employee_id = result.get('PersonnelId')
 
-                if person_info:
-                    context_data.append(" | ".join(person_info))
+                if employee_name:
+                    entity_info = f"Employee: {employee_name}"
+                    if employee_id:
+                        entity_info += f" (EmpNo: {employee_id})"
+                    entities.append(entity_info)
+
+                # --- Extract SUPERVISOR/MANAGER information ---
+                supervisor_name = None
+
+                if 'Supervisor' in result:
+                    # Concatenated field from JOIN queries
+                    supervisor_name = result.get('Supervisor')
+                elif 'ManagerFirstName' in result and 'ManagerLastName' in result:
+                    # Aliased fields from JOIN queries
+                    first = result.get('ManagerFirstName', '')
+                    last = result.get('ManagerLastName', '')
+                    if first or last:
+                        supervisor_name = f"{first} {last}".strip()
+                elif 'SupervisorFirstName' in result and 'SupervisorLastName' in result:
+                    first = result.get('SupervisorFirstName', '')
+                    last = result.get('SupervisorLastName', '')
+                    if first or last:
+                        supervisor_name = f"{first} {last}".strip()
+
+                if supervisor_name:
+                    entities.append(f"Manager: {supervisor_name}")
+
+                # Add to context data if we found any entities
+                if entities:
+                    context_data.append(" | ".join(entities))
 
             if context_data:
                 conversation_content += "\n\n[Context: " + "; ".join(context_data) + "]"
