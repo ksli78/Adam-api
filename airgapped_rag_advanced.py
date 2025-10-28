@@ -544,23 +544,28 @@ class AdvancedRAGPipeline:
 
 CURRENT QUESTION: {question}
 
-TASK: Rewrite the current question to be a standalone search query that includes all necessary context from the conversation history.
+TASK: Rewrite the current question to be a standalone search query by replacing pronouns with their referents from the conversation.
 
-RULES:
-1. Replace pronouns (it, that, this, them) with the actual subjects from conversation
-2. Replace vague references with specific terms
-3. Keep the query concise and focused on the key topic
-4. If the question is already standalone, return it unchanged
-5. Only output the rewritten question - nothing else
+CRITICAL RULES:
+1. ONLY replace pronouns (it, that, this, them, these) with the actual subject from conversation
+2. Do NOT add extra details, document names, or qualifiers
+3. Keep the SAME sentence structure as the original
+4. Keep the query SHORT and SIMPLE
+5. If already standalone, return it UNCHANGED
+6. Output ONLY the rewritten question - no explanations
 
 EXAMPLES:
 Conversation: "User: What is the PTO policy?"
 Current: "How do I request it?"
 Rewritten: "How do I request PTO?"
 
+Conversation: "User: What is the PTO policy?"
+Current: "How is it calculated?"
+Rewritten: "How is PTO calculated?"
+
 Conversation: "User: Does Amentum have a dress code?"
 Current: "What about shoes?"
-Rewritten: "What is the dress code policy for shoes at Amentum?"
+Rewritten: "What about shoes in the dress code?"
 
 Conversation: "User: What are the safety procedures?"
 Current: "Tell me more"
