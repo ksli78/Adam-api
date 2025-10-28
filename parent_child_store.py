@@ -55,13 +55,16 @@ STOP_WORDS = {
 
 def tokenize_for_bm25(text: str) -> List[str]:
     """
-    Tokenize text for BM25 search with stop word filtering.
+    Tokenize text for BM25 search with stop word filtering and punctuation stripping.
 
-    Removes common English stop words to improve keyword matching accuracy.
+    Removes common English stop words and strips punctuation to improve keyword matching accuracy.
     """
+    import string
     tokens = text.lower().split()
-    # Filter out stop words and keep only meaningful terms
-    return [token for token in tokens if token not in STOP_WORDS and len(token) > 1]
+    # Strip punctuation from each token
+    tokens = [token.strip(string.punctuation) for token in tokens]
+    # Filter out stop words, empty tokens, and keep only meaningful terms
+    return [token for token in tokens if token and token not in STOP_WORDS and len(token) > 1]
 
 
 class ParentChildDocumentStore:

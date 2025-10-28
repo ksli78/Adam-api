@@ -532,6 +532,8 @@ class AdvancedRAGPipeline:
 
         Converts follow-up questions like "How do I request it?" into
         "How do I request PTO?" by using the conversation history.
+        Also adds context for topic references like "Explain SafeUp" when
+        SafeUp was mentioned in previous answers.
 
         Args:
             question: User's current question (may have pronouns/references)
@@ -544,15 +546,16 @@ class AdvancedRAGPipeline:
 
 CURRENT QUESTION: {question}
 
-TASK: Rewrite the current question to be a standalone search query by replacing pronouns with their referents from the conversation.
+TASK: Rewrite the current question to be a standalone search query for document retrieval.
 
 CRITICAL RULES:
-1. ONLY replace pronouns (it, that, this, them, these) with the actual subject from conversation
-2. Do NOT add extra details, document names, or qualifiers
-3. Keep the SAME sentence structure as the original
-4. Keep the query SHORT and SIMPLE
-5. If already standalone, return it UNCHANGED
-6. Output ONLY the rewritten question - no explanations
+1. Replace pronouns (it, that, this, them, these) with their referents from conversation
+2. If the question mentions a topic/term from the conversation, add minimal context about what domain it's from
+3. Do NOT add document names (like "EN-PO-0301.pdf") or URLs
+4. Keep the SAME basic sentence structure as the original
+5. Keep the query SHORT and SIMPLE - just enough context to search
+6. If already standalone, return it UNCHANGED
+7. Output ONLY the rewritten question - no explanations
 
 EXAMPLES:
 Conversation: "User: What is the PTO policy?"
@@ -570,6 +573,18 @@ Rewritten: "What about shoes in the dress code?"
 Conversation: "User: What are the safety procedures?"
 Current: "Tell me more"
 Rewritten: "Tell me more about safety procedures"
+
+Conversation: "User: What is the safety policy? Assistant: The safety policy includes SafeUp®, Amentum's safety program..."
+Current: "Explain SafeUp"
+Rewritten: "Explain SafeUp safety program"
+
+Conversation: "User: What benefits does Amentum offer? Assistant: Amentum offers 401k, health insurance, and tuition assistance..."
+Current: "Tell me about tuition assistance"
+Rewritten: "Tell me about tuition assistance benefits"
+
+Conversation: "User: What is the timesheet policy? Assistant: EN-PO-0501 describes timesheet submission..."
+Current: "Who approves them?"
+Rewritten: "Who approves timesheets?"
 
 REWRITTEN QUESTION:"""
 
