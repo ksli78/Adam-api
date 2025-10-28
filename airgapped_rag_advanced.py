@@ -113,6 +113,32 @@ class AdvancedRAGPipeline:
         logger.info("Advanced RAG Pipeline initialized successfully!")
         logger.info(f"Document store stats: {self.document_store.get_statistics()}")
 
+        # Warm up the LLM to keep it hot on GPU
+        self._warmup_model()
+
+    def _warmup_model(self):
+        """
+        Warm up the LLM model to keep it loaded in GPU memory.
+
+        This prevents the first query from being slow due to model loading.
+        Runs a simple generation to load the model into VRAM.
+        """
+        logger.info("Warming up LLM model on GPU...")
+        try:
+            # Run a quick, simple generation to load model
+            self.ollama_client.generate(
+                model=LLM_MODEL,
+                prompt="Hello",
+                options={
+                    "num_predict": 5,  # Just a few tokens
+                    "temperature": 0.1
+                },
+                keep_alive=-1  # Keep model loaded indefinitely
+            )
+            logger.info("LLM model warmed up and ready on GPU")
+        except Exception as e:
+            logger.warning(f"Model warmup failed (non-critical): {e}")
+
     async def ingest_document(
         self,
         file_path: str,
@@ -530,7 +556,8 @@ ANSWER:""")
                 options={
                     "temperature": temperature,
                     "num_predict": 500
-                }
+                },
+                keep_alive=-1  # Keep model loaded in GPU memory
             )
 
             answer = response['response'].strip()
@@ -562,6 +589,8 @@ class QueryRequest(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     citations: List[Dict[str, Any]]
+    conversation_id: Optional[str] = None
+    conversation_warning: Optional[str] = None
     retrieval_stats: Dict[str, Any]
 
 

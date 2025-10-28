@@ -144,7 +144,8 @@ Your response:"""
                 options={
                     "temperature": 0.1,  # Low temperature for consistent classification
                     "num_predict": 10    # Only need one word
-                }
+                },
+                keep_alive=-1  # Keep model loaded in GPU memory
             )
 
             classification = response['response'].strip().upper()
@@ -235,7 +236,8 @@ YOUR RESPONSE:"""
                 options={
                     "temperature": 0.7,  # Higher temperature for more natural responses
                     "num_predict": 300
-                }
+                },
+                keep_alive=-1  # Keep model loaded in GPU memory
             )
 
             answer = response['response'].strip()
