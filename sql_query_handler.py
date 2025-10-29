@@ -424,10 +424,11 @@ CRITICAL FORMATTING RULES:
 1. Answer directly - NO preambles like "Here is..." or "The answer is..."
 2. DO NOT repeat or echo the user's question in your answer
 3. NO closing statements like "Let me know..." or notes about result count
-4. Use HTML formatting (line breaks will be converted to <br> automatically):
+4. Use MINIMAL line breaks (will be converted to <br> automatically):
    - Single line break (\n) between related fields
-   - Double line break (\n\n) MAX for section breaks
-   - NEVER use triple or more line breaks (\n\n\n) - too much whitespace!
+   - Double line break (\n\n) ONLY for major section breaks
+   - ABSOLUTELY NO triple line breaks (\n\n\n) - this looks terrible!
+   - Keep formatting TIGHT and clean - avoid excessive whitespace
    - Email addresses: Format as <a href="mailto:EMAIL">EMAIL</a>
    - Phone numbers: Format as <a href="tel:PHONE">PHONE</a>
    - Lists: Use bullet points with • or numbered lists
@@ -452,8 +453,8 @@ GOOD: "John Smith's contact information:\\n\\nEmail: <a href=\\"mailto:john.smit
 BAD: "John Smith's contact information:\\n\\n\\n\\nEmail..." ← Too many line breaks!
 
 Question: "Who is Khaled's boss?"
-GOOD: "Khaled Sliman's boss is:\\n\\nColly Edgeworth, Senior Project Manager\\n\\nEmail: <a href=\\"mailto:colly@acme.com\\">colly@acme.com</a>\\nPhone: <a href=\\"tel:555-1234\\">555-1234</a>"
-BAD: "Khaled Sliman's boss is:\\n\\n\\nColly Edgeworth...\\n\\n\\nContact information:\\n\\n\\n..." ← Too many blank lines!
+GOOD: "Khaled Sliman's boss is Colly Edgeworth, Senior Project Manager.\\n\\nEmail: <a href=\\"mailto:colly@acme.com\\">colly@acme.com</a>\\nPhone: <a href=\\"tel:555-1234\\">555-1234</a>"
+BAD: "Khaled Sliman's boss is:\\n\\n\\nColly Edgeworth, Senior Project Manager\\n\\n\\nContact information:\\n\\n\\nEmail..." ← Way too many blank lines!
 
 Question: "List employees in Engineering"
 Answer: "Engineering department employees:\\n\\n• John Smith - <a href=\\"mailto:john@company.com\\">john@company.com</a>\\n• Jane Doe - <a href=\\"mailto:jane@company.com\\">jane@company.com</a>\\n• Bob Johnson - <a href=\\"mailto:bob@company.com\\">bob@company.com</a>"
@@ -476,10 +477,16 @@ FORMATTED ANSWER:"""
             # Convert newlines to HTML line breaks for better display
             answer = answer.replace('\n', '<br>')
 
-            # Collapse excessive consecutive line breaks (safety net)
-            # Replace 3+ consecutive <br> with max 2
+            # Aggressively collapse excessive consecutive line breaks
+            # This is a safety net for LLM inconsistencies
             import re
-            answer = re.sub(r'(<br>\s*){3,}', '<br><br>', answer)
+
+            # First, normalize any whitespace between <br> tags
+            answer = re.sub(r'<br>\s+<br>', '<br><br>', answer)
+
+            # Then collapse 3+ consecutive <br> tags to exactly 2
+            while '<br><br><br>' in answer:
+                answer = answer.replace('<br><br><br>', '<br><br>')
 
             # Add overflow warning if results were truncated
             if metadata.get('truncated', False) and rows_returned >= max_rows:
