@@ -412,6 +412,9 @@ class ParentChildDocumentStore:
                                      reverse=True)[:5]
             logger.info(f"Top 5 BM25 scores: {[f'{bm25_scores_normalized[i]:.3f}' for i in top_bm25_indices]}")
 
+        # Track chunks that pass BM25 threshold
+        bm25_passed = []
+
         for i, chunk_id in enumerate(all_chunks['ids']):
             # BM25 score (already normalized 0-1)
             bm25_score = float(bm25_scores_normalized[i])
@@ -423,6 +426,27 @@ class ParentChildDocumentStore:
                 continue
 
             # Semantic score (0 if not in semantic results)
+            semantic_score = semantic_scores.get(chunk_id, 0.0)
+
+            # Log all chunks that passed BM25 threshold
+            bm25_passed.append({
+                'chunk_id': chunk_id[:12],
+                'bm25': bm25_score,
+                'semantic': semantic_score,
+                'doc_title': all_chunks['metadatas'][i].get('document_title', 'unknown')[:30]
+            })
+
+        if bm25_passed:
+            logger.info(f"Chunks passing BM25 threshold (>={MIN_BM25_THRESHOLD}): {len(bm25_passed)}")
+            for chunk_info in bm25_passed[:10]:  # Show first 10
+                logger.info(f"  {chunk_info['chunk_id']}... BM25={chunk_info['bm25']:.3f} Semantic={chunk_info['semantic']:.3f} Doc={chunk_info['doc_title']}")
+
+        # Now apply semantic threshold
+        for i, chunk_id in enumerate(all_chunks['ids']):
+            bm25_score = float(bm25_scores_normalized[i])
+            if bm25_weight > 0 and bm25_score < MIN_BM25_THRESHOLD:
+                continue
+
             semantic_score = semantic_scores.get(chunk_id, 0.0)
 
             # Skip chunks with very low semantic relevance
