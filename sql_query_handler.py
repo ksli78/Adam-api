@@ -498,6 +498,8 @@ FORMATTED ANSWER:"""
         # Cap at 8000 tokens maximum
         num_predict = min(8000, 500 + (rows_returned * 80))
 
+        logger.info(f"Formatting {rows_returned} rows with num_predict={num_predict}")
+
         try:
             response = self.ollama_client.generate(
                 model=self.model_name,
@@ -510,6 +512,14 @@ FORMATTED ANSWER:"""
             )
 
             answer = response['response'].strip()
+
+            logger.info(f"LLM response length: {len(answer)} chars, starts with: {answer[:100]}")
+            logger.info(f"Response contains table: {'<table' in answer.lower()}")
+
+            # Count how many rows are in the generated table
+            if '<table' in answer.lower():
+                row_count = answer.lower().count('<tr>') - 1  # Subtract header row
+                logger.info(f"Generated table has {row_count} data rows (expected {rows_returned})")
 
             import re
 
