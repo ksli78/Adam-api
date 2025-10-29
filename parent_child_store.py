@@ -410,7 +410,7 @@ class ParentChildDocumentStore:
         # Step 5: Fuse scores and filter out weak matches
         # In hybrid mode, require both strong keyword AND semantic relevance
         # This prevents documents with keyword matches but no semantic relevance
-        MIN_BM25_THRESHOLD = 0.95  # Require 95% of max BM25 score (very strict!)
+        MIN_BM25_THRESHOLD = 0.85  # Lowered to 85% to allow EN-PO-0301.pdf (BM25=0.860) to pass when EN-PR-0051.pdf has keyword pollution
         MIN_SEMANTIC_THRESHOLD = 0.2  # Require minimum semantic relevance
 
         fused_results = []
