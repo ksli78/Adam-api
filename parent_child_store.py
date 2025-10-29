@@ -429,7 +429,7 @@ class ParentChildDocumentStore:
             # Even with perfect keyword match, if semantic score is near 0, document is likely irrelevant
             # Example: "Does amentum have a dress code" matching doc that only contains "Amentum"
             if semantic_score < MIN_SEMANTIC_THRESHOLD:
-                logger.debug(
+                logger.info(
                     f"Filtered out chunk {chunk_id[:8]}... - "
                     f"low semantic relevance (BM25={bm25_score:.3f}, semantic={semantic_score:.3f})"
                 )
