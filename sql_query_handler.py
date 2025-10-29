@@ -181,30 +181,31 @@ class SQLQueryHandler:
             prompt_parts.append("\nFOLLOW-UP QUERY RULES:")
             prompt_parts.append("1. PRIORITY: If the question explicitly mentions a person's name, use that name (ignore pronouns)")
             prompt_parts.append("   Example: 'When did Khaled get hired?' → Use 'Khaled' even if context has multiple people")
-            prompt_parts.append("2. For pronouns (he, she, his, her): Use conversation context to determine who")
-            prompt_parts.append("3. Context may show multiple people: [Context: Employee: John Smith | Manager: Jane Doe]")
-            prompt_parts.append("4. For pronoun references, determine WHO based on:")
-            prompt_parts.append("   - If previous Q was 'Who does X report to?', then 'his phone' = Manager's phone")
+            prompt_parts.append("2. CRITICAL: Pronouns (he, she, his, her, him, his, hers, they, their) are NOT names!")
+            prompt_parts.append("   NEVER search for pronouns as literal names in WHERE clauses")
+            prompt_parts.append("   BAD: WHERE FirstName LIKE '%her%' ← Searching for name 'her' - WRONG!")
+            prompt_parts.append("   GOOD: Use context to find the actual person's name")
+            prompt_parts.append("3. For pronoun references, determine WHO from conversation context:")
+            prompt_parts.append("   - Context shows: [Employee: Khaled Sliman | Manager: Colly Edgeworth]")
+            prompt_parts.append("   - Previous answer was about Colly (the manager)")
+            prompt_parts.append("   - 'her' or 'she' = Colly Edgeworth")
+            prompt_parts.append("   - Use: WHERE (FirstName LIKE '%Colly%' AND LastName LIKE '%Edgeworth%')")
+            prompt_parts.append("4. Determine WHO based on conversation flow:")
+            prompt_parts.append("   - If previous Q was 'Who is X's boss?', then 'her department' = Boss's department")
             prompt_parts.append("   - If previous Q was 'Who reports to X?', then 'their info' = Employees' info")
-            prompt_parts.append("   - Use the person who was the SUBJECT/ANSWER of the previous question")
-            prompt_parts.append("5. Extract names from context OR question and use in FirstName/LastName WHERE clauses")
+            prompt_parts.append("5. Extract actual names from context, NEVER use pronouns in SQL")
             prompt_parts.append("6. NEVER use UserName field in WHERE clauses - ONLY use FirstName, LastName, or EmpNo")
             prompt_parts.append("\nEXAMPLES:")
+            prompt_parts.append("Context: [Employee: Khaled Sliman | Manager: Colly Edgeworth]")
+            prompt_parts.append("Previous Q: 'Who is Khaled's boss?' Answer: '...Colly Edgeworth...'")
+            prompt_parts.append("Q: 'What is her department?' ← 'her' is a PRONOUN referring to Colly")
+            prompt_parts.append("BAD SQL: WHERE FirstName LIKE '%her%' ← NO! Don't search for 'her' as a name!")
+            prompt_parts.append("GOOD SQL: SELECT TOP 1000 FirstName, LastName, HomeDept FROM vwPersonnelAll WHERE (FirstName LIKE '%Colly%' AND LastName LIKE '%Edgeworth%') AND IsTerminated = 0")
+            prompt_parts.append("")
             prompt_parts.append("Context: [Employee: Khaled Sliman | Manager: Colly Edgeworth]")
             prompt_parts.append("Q: 'When did Khaled get hired?' ← Khaled explicitly mentioned!")
             prompt_parts.append("→ Use Khaled (not Colly), include HireDate")
             prompt_parts.append("→ SQL: SELECT TOP 1000 FirstName, LastName, HireDate FROM vwPersonnelAll WHERE (FirstName LIKE '%Khaled%' AND LastName LIKE '%Sliman%') AND IsTerminated = 0")
-            prompt_parts.append("")
-            prompt_parts.append("Context: [Employee: Wang Hinrichs (EmpNo: 12345) | Manager: John Boss]")
-            prompt_parts.append("Previous Q: 'Who does Wang report to?' Answer: 'Wang reports to John Boss...'")
-            prompt_parts.append("Q: 'What is his phone number?' ← pronoun 'his', no name mentioned")
-            prompt_parts.append("→ 'his' refers to John Boss (the manager was the answer)")
-            prompt_parts.append("→ SQL: SELECT TOP 1000 FirstName, LastName, WorkPhone FROM vwPersonnelAll WHERE (FirstName LIKE '%John%' AND LastName LIKE '%Boss%') AND IsTerminated = 0")
-            prompt_parts.append("")
-            prompt_parts.append("Context: [Employee: Wang Hinrichs (EmpNo: 12345)]")
-            prompt_parts.append("Q: 'What is his email?' ← pronoun 'his', only one person in context")
-            prompt_parts.append("→ 'his' refers to Wang Hinrichs")
-            prompt_parts.append("→ SQL: SELECT TOP 1000 FirstName, LastName, Email FROM vwPersonnelAll WHERE (FirstName LIKE '%Wang%' AND LastName LIKE '%Hinrichs%') AND IsTerminated = 0")
 
         prompt_parts.append(f"\nUSER QUESTION: {user_query}")
         prompt_parts.append("\nGENERATED SQL:")
@@ -423,16 +424,18 @@ CRITICAL FORMATTING RULES:
 1. Answer directly - NO preambles like "Here is..." or "The answer is..."
 2. DO NOT repeat or echo the user's question in your answer
 3. NO closing statements like "Let me know..." or notes about result count
-4. Use HTML formatting:
-   - Line breaks: Use newlines (\\n) - will be converted to <br> automatically
+4. Use HTML formatting (line breaks will be converted to <br> automatically):
+   - Single line break (\n) between related fields
+   - Double line break (\n\n) MAX for section breaks
+   - NEVER use triple or more line breaks (\n\n\n) - too much whitespace!
    - Email addresses: Format as <a href="mailto:EMAIL">EMAIL</a>
    - Phone numbers: Format as <a href="tel:PHONE">PHONE</a>
    - Lists: Use bullet points with • or numbered lists
-4. For names: ALWAYS use FirstName and LastName fields, NEVER use UserName field
-5. For contact info: Present as a formatted list with labels
-6. For dates: Format nicely (e.g., "January 15, 2020")
-7. Skip null/empty fields
-8. NEVER include sensitive fields (AnnualRate)
+5. For names: ALWAYS use FirstName and LastName fields, NEVER use UserName field
+6. For contact info: Present as a formatted list with labels
+7. For dates: Format nicely (e.g., "January 15, 2020")
+8. Skip null/empty fields
+9. NEVER include sensitive fields (AnnualRate)
 
 FORMATTING EXAMPLES:
 
@@ -445,7 +448,12 @@ GOOD: "Colly works for the ENGR-003 department."
 BAD: "What department does Colly work for? Colly works for..." ← DON'T echo question!
 
 Question: "What is John Smith's contact info?"
-Answer: "John Smith's contact information:\\n\\nEmail: <a href=\\"mailto:john.smith@company.com\\">john.smith@company.com</a>\\nPhone: <a href=\\"tel:555-1234\\">555-1234</a>\\nBuilding: 101, Room: 205\\nMail Code: MC-1234"
+GOOD: "John Smith's contact information:\\n\\nEmail: <a href=\\"mailto:john.smith@company.com\\">john.smith@company.com</a>\\nPhone: <a href=\\"tel:555-1234\\">555-1234</a>\\nBuilding: 101, Room: 205\\nMail Code: MC-1234"
+BAD: "John Smith's contact information:\\n\\n\\n\\nEmail..." ← Too many line breaks!
+
+Question: "Who is Khaled's boss?"
+GOOD: "Khaled Sliman's boss is:\\n\\nColly Edgeworth, Senior Project Manager\\n\\nEmail: <a href=\\"mailto:colly@acme.com\\">colly@acme.com</a>\\nPhone: <a href=\\"tel:555-1234\\">555-1234</a>"
+BAD: "Khaled Sliman's boss is:\\n\\n\\nColly Edgeworth...\\n\\n\\nContact information:\\n\\n\\n..." ← Too many blank lines!
 
 Question: "List employees in Engineering"
 Answer: "Engineering department employees:\\n\\n• John Smith - <a href=\\"mailto:john@company.com\\">john@company.com</a>\\n• Jane Doe - <a href=\\"mailto:jane@company.com\\">jane@company.com</a>\\n• Bob Johnson - <a href=\\"mailto:bob@company.com\\">bob@company.com</a>"
@@ -467,6 +475,11 @@ FORMATTED ANSWER:"""
 
             # Convert newlines to HTML line breaks for better display
             answer = answer.replace('\n', '<br>')
+
+            # Collapse excessive consecutive line breaks (safety net)
+            # Replace 3+ consecutive <br> with max 2
+            import re
+            answer = re.sub(r'(<br>\s*){3,}', '<br><br>', answer)
 
             # Add overflow warning if results were truncated
             if metadata.get('truncated', False) and rows_returned >= max_rows:
