@@ -47,13 +47,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-DATA_DIR = Path(os.getenv("DATA_DIR", "/data/airgapped_rag"))
+# DATA_DIR structure:
+#   - documents/           - Uploaded PDF files
+#   - chromadb_advanced/   - Vector database (parent and child collections)
+# Set DATA_DIR environment variable to customize location (e.g., D:\data\airgapped_rag on Windows)
+default_data_dir = "D:/data/airgapped_rag" if os.name == 'nt' else "/data/airgapped_rag"
+DATA_DIR = Path(os.getenv("DATA_DIR", default_data_dir))
 DOCS_DIR = DATA_DIR / "documents"
 CHROMA_DIR = DATA_DIR / "chromadb_advanced"
 
 # Create directories
 DOCS_DIR.mkdir(parents=True, exist_ok=True)
 CHROMA_DIR.mkdir(parents=True, exist_ok=True)
+
+logger.info(f"Using data directory: {DATA_DIR}")
+logger.info(f"ChromaDB location: {CHROMA_DIR}")
 
 # Ollama configuration
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")

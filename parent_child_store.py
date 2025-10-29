@@ -14,6 +14,7 @@ Retrieval strategy:
 """
 
 import logging
+import os
 import uuid
 from typing import List, Dict, Any, Tuple, Optional
 from pathlib import Path
@@ -26,6 +27,9 @@ from rank_bm25 import BM25Okapi
 from semantic_chunker import Chunk
 
 logger = logging.getLogger(__name__)
+
+# Default data directory (platform-specific)
+DEFAULT_CHROMA_DIR = "D:/data/airgapped_rag/chromadb_advanced" if os.name == 'nt' else "/data/airgapped_rag/chromadb_advanced"
 
 # Import feedback store (lazy import to avoid circular dependencies)
 _feedback_store = None
@@ -76,7 +80,7 @@ class ParentChildDocumentStore:
 
     def __init__(
         self,
-        persist_directory: str = "/data/airgapped_rag/chromadb_advanced",
+        persist_directory: str = None,
         embedding_model: str = "all-MiniLM-L6-v2",
         child_collection_name: str = "child_chunks",
         parent_collection_name: str = "parent_chunks"
@@ -85,13 +89,19 @@ class ParentChildDocumentStore:
         Initialize the parent-child document store.
 
         Args:
-            persist_directory: Directory for ChromaDB persistence
+            persist_directory: Directory for ChromaDB persistence (defaults to platform-specific path)
             embedding_model: Sentence-transformers model for embeddings
             child_collection_name: Name for child chunks collection
             parent_collection_name: Name for parent chunks collection
         """
+        # Use default directory if not specified
+        if persist_directory is None:
+            persist_directory = DEFAULT_CHROMA_DIR
+
         self.persist_directory = Path(persist_directory)
         self.persist_directory.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"ParentChildDocumentStore using ChromaDB at: {self.persist_directory}")
 
         self.child_collection_name = child_collection_name
         self.parent_collection_name = parent_collection_name
