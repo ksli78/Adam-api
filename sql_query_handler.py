@@ -10,6 +10,7 @@ import pyodbc
 import yaml
 import os
 import json
+import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import ollama
@@ -386,6 +387,75 @@ class SQLQueryHandler:
             logger.error(f"Error executing SQL: {e}", exc_info=True)
             raise RuntimeError(f"Query execution failed: {str(e)}")
 
+    def _generate_html_table(self, results: List[Dict[str, Any]]) -> str:
+        """
+        Generate HTML table directly in Python for large result sets.
+
+        Args:
+            results: Query results as list of dicts
+
+        Returns:
+            HTML table string
+        """
+        if not results:
+            return ""
+
+        # Get columns from first result, excluding ID fields
+        all_columns = list(results[0].keys())
+        columns = [col for col in all_columns if col.lower() not in ['personnelid', 'empno', 'supervisorno']]
+
+        # Start table with styling
+        html_parts = ['<table class="adam-ai-table" style="border-collapse: collapse; width: 100%;">']
+
+        # Add header row
+        html_parts.append('<tr>')
+        for col in columns:
+            # Convert camelCase/PascalCase to Title Case with spaces
+            display_name = col
+            # Add spaces before capitals
+            display_name = re.sub(r'([A-Z])', r' \1', display_name).strip()
+            # Handle common abbreviations
+            display_name = display_name.replace('Email', 'Email').replace('Dept', 'Department')
+
+            html_parts.append(f'<th style="background-color: #D6D4D4; padding: 4px; text-align: left;">{display_name}</th>')
+        html_parts.append('</tr>')
+
+        # Add data rows with zebra striping for >3 rows
+        use_zebra = len(results) > 3
+
+        for idx, row in enumerate(results):
+            # Alternate row color for even rows (0-indexed, so idx 1, 3, 5 are "even" visually)
+            row_style = ""
+            if use_zebra and idx % 2 == 1:
+                row_style = ' style="background-color: #F5F5F5;"'
+
+            html_parts.append(f'<tr{row_style}>')
+
+            for col in columns:
+                value = row.get(col, '')
+
+                # Skip null/None values
+                if value is None or value == '':
+                    value = ''
+                else:
+                    # Convert to string
+                    value = str(value)
+
+                    # Make emails clickable
+                    if 'email' in col.lower() and '@' in value:
+                        value = f'<a href="mailto:{value}">{value}</a>'
+                    # Make phone numbers clickable
+                    elif 'phone' in col.lower() and value.strip():
+                        value = f'<a href="tel:{value}">{value}</a>'
+
+                html_parts.append(f'<td style="padding: 4px; vertical-align: top;">{value}</td>')
+
+            html_parts.append('</tr>')
+
+        html_parts.append('</table>')
+
+        return ''.join(html_parts)
+
     async def format_results(
         self,
         user_query: str,
@@ -393,7 +463,10 @@ class SQLQueryHandler:
         metadata: Dict[str, Any]
     ) -> str:
         """
-        Format SQL results as natural language using LLM.
+        Format SQL results as natural language using LLM or direct HTML generation.
+
+        For large result sets (>10 rows), generates HTML table directly in Python.
+        For small results or contact info queries, uses LLM for natural formatting.
 
         Args:
             user_query: Original user question
@@ -401,7 +474,7 @@ class SQLQueryHandler:
             metadata: Query metadata (row count, etc.)
 
         Returns:
-            Natural language formatted answer
+            Natural language formatted answer or HTML table
         """
         rows_returned = metadata['rows_returned']
         max_rows = self.security_config['max_rows']
@@ -412,6 +485,22 @@ class SQLQueryHandler:
                 "I couldn't find any results matching your query. "
                 "Please check your search terms and try again."
             )
+
+        # For large result sets (>10 rows), generate table directly in Python
+        # This is much faster and more reliable than LLM generation
+        if rows_returned > 10:
+            logger.info(f"Using Python-based table generation for {rows_returned} rows")
+            table_html = self._generate_html_table(results)
+
+            # Add overflow warning if needed
+            if metadata.get('truncated', False) and rows_returned >= max_rows:
+                table_html += (
+                    f"<br><br>Note: This query matched more than {max_rows} results. "
+                    f"Only the first {max_rows} are shown. "
+                    f"Please contact IT if you need a complete dataset with all results."
+                )
+
+            return table_html
 
         # Build prompt for result formatting
         prompt = f"""You are formatting database query results. Provide a direct, concise answer with HTML formatting.
@@ -520,8 +609,6 @@ FORMATTED ANSWER:"""
             if '<table' in answer.lower():
                 row_count = answer.lower().count('<tr>') - 1  # Subtract header row
                 logger.info(f"Generated table has {row_count} data rows (expected {rows_returned})")
-
-            import re
 
             # Check if answer contains HTML table
             if '<table' in answer.lower():
