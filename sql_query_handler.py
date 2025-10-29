@@ -158,10 +158,11 @@ class SQLQueryHandler:
             "3. ALWAYS exclude terminated employees by adding 'WHERE IsTerminated = 0' unless specifically asked about terminated employees",
             "4. Use LIKE with wildcards (%) for text searches: WHERE FirstName LIKE '%John%'",
             "5. For name searches, search both FirstName AND LastName",
-            "6. Avoid selecting sensitive columns (AnnualRate) unless the question specifically asks for it",
-            "7. Use proper date formatting for MS SQL Server (e.g., YEAR(HireDate) = 2024)",
-            "8. Return ONLY the SQL query on a SINGLE LINE - no explanations, no markdown, no quotes, no line breaks in the SQL",
-            "9. Format: SELECT TOP 1000 columns FROM table WHERE conditions",
+            "6. NEVER select ID fields (PersonnelId, EmpNo, SupervisorNo) unless specifically needed for joins or context tracking",
+            "7. Avoid selecting sensitive columns (AnnualRate) unless the question specifically asks for it",
+            "8. Use proper date formatting for MS SQL Server (e.g., YEAR(HireDate) = 2024)",
+            "9. Return ONLY the SQL query on a SINGLE LINE - no explanations, no markdown, no quotes, no line breaks in the SQL",
+            "10. Format: SELECT TOP 1000 columns FROM table WHERE conditions",
             "\nCOMMON QUERY PATTERNS:",
             "- 'contact info' or 'contact information' = Use LEFT JOIN to include supervisor info, select: LastName, FirstName, MiddleName, HomeDept, WorkPhone, BuildingCode, Room, MailCode, Email, supervisor's LastName, FirstName, MiddleName",
             "- 'location' or 'where does X sit' = FirstName, LastName, BuildingCode, Room, OnOffSite",
@@ -424,16 +425,21 @@ CRITICAL FORMATTING RULES:
 1. Answer directly - NO preambles like "Here is..." or "The answer is..."
 2. DO NOT repeat or echo the user's question in your answer
 3. NO closing statements like "Let me know..." or notes about result count
-4. Use MINIMAL line breaks (will be converted to <br> automatically):
-   - Single line break (\n) between related fields
-   - Double line break (\n\n) ONLY for major section breaks
-   - ABSOLUTELY NO triple line breaks (\n\n\n) - this looks terrible!
-   - Keep formatting TIGHT and clean - avoid excessive whitespace
-   - Email addresses: Format as <a href="mailto:EMAIL">EMAIL</a>
-   - Phone numbers: Format as <a href="tel:PHONE">PHONE</a>
-   - Lists: Use bullet points with • or numbered lists
+4. Choose format based on result type:
+   A. SINGLE RESULT or CONTACT INFO: Use label:value format with line breaks
+      - Single line break (\n) between fields
+      - ABSOLUTELY NO triple line breaks (\n\n\n)
+      - Email addresses: Format as <a href="mailto:EMAIL">EMAIL</a>
+      - Phone numbers: Format as <a href="tel:PHONE">PHONE</a>
+   B. MULTIPLE RESULTS (lists): Use HTML TABLE format with:
+      - NO <br> tags inside table elements (no <br> in <th>, <td>, or <tr>)
+      - Header style: <th style="background-color: #D6D4D4; padding: 4px; text-align: left;">
+      - For >3 rows: Alternate row colors using <tr style="background-color: #F5F5F5;"> for even rows
+      - Cell style: <td style="padding: 4px; vertical-align: top;">
+      - Make emails clickable: <a href="mailto:EMAIL">EMAIL</a>
+      - Table style: <table style="border-collapse: collapse; width: 100%;">
 5. For names: ALWAYS use FirstName and LastName fields, NEVER use UserName field
-6. For contact info: Present as a formatted list with labels
+6. NEVER display ID fields (PersonnelId, EmpNo, SupervisorNo) in output - skip them entirely
 7. For dates: Format nicely (e.g., "January 15, 2020")
 8. Skip null/empty fields
 9. NEVER include sensitive fields (AnnualRate)
@@ -457,7 +463,32 @@ GOOD: "Khaled Sliman's boss is Colly Edgeworth, Senior Project Manager.\\n\\nEma
 BAD: "Khaled Sliman's boss is:\\n\\n\\nColly Edgeworth, Senior Project Manager\\n\\n\\nContact information:\\n\\n\\nEmail..." ← Way too many blank lines!
 
 Question: "List employees in Engineering"
-Answer: "Engineering department employees:\\n\\n• John Smith - <a href=\\"mailto:john@company.com\\">john@company.com</a>\\n• Jane Doe - <a href=\\"mailto:jane@company.com\\">jane@company.com</a>\\n• Bob Johnson - <a href=\\"mailto:bob@company.com\\">bob@company.com</a>"
+Answer: "<table style=\\"border-collapse: collapse; width: 100%;\\">
+<tr>
+<th style=\\"background-color: #D6D4D4; padding: 4px; text-align: left;\\">First Name</th>
+<th style=\\"background-color: #D6D4D4; padding: 4px; text-align: left;\\">Last Name</th>
+<th style=\\"background-color: #D6D4D4; padding: 4px; text-align: left;\\">Email</th>
+<th style=\\"background-color: #D6D4D4; padding: 4px; text-align: left;\\">Title</th>
+</tr>
+<tr>
+<td style=\\"padding: 4px; vertical-align: top;\\">John</td>
+<td style=\\"padding: 4px; vertical-align: top;\\">Smith</td>
+<td style=\\"padding: 4px; vertical-align: top;\\"><a href=\\"mailto:john@company.com\\">john@company.com</a></td>
+<td style=\\"padding: 4px; vertical-align: top;\\">Engineer</td>
+</tr>
+<tr style=\\"background-color: #F5F5F5;\\">
+<td style=\\"padding: 4px; vertical-align: top;\\">Jane</td>
+<td style=\\"padding: 4px; vertical-align: top;\\">Doe</td>
+<td style=\\"padding: 4px; vertical-align: top;\\"><a href=\\"mailto:jane@company.com\\">jane@company.com</a></td>
+<td style=\\"padding: 4px; vertical-align: top;\\">Manager</td>
+</tr>
+<tr>
+<td style=\\"padding: 4px; vertical-align: top;\\">Bob</td>
+<td style=\\"padding: 4px; vertical-align: top;\\">Johnson</td>
+<td style=\\"padding: 4px; vertical-align: top;\\"><a href=\\"mailto:bob@company.com\\">bob@company.com</a></td>
+<td style=\\"padding: 4px; vertical-align: top;\\">Analyst</td>
+</tr>
+</table>"
 
 FORMATTED ANSWER:"""
 
@@ -474,19 +505,40 @@ FORMATTED ANSWER:"""
 
             answer = response['response'].strip()
 
-            # Convert newlines to HTML line breaks for better display
-            answer = answer.replace('\n', '<br>')
-
-            # Aggressively collapse excessive consecutive line breaks
-            # This is a safety net for LLM inconsistencies
             import re
 
-            # First, normalize any whitespace between <br> tags
-            answer = re.sub(r'<br>\s+<br>', '<br><br>', answer)
+            # Check if answer contains HTML table
+            if '<table' in answer.lower():
+                # For tables: Remove newlines inside table elements but preserve table structure
+                # Extract table and process separately
+                def clean_table(match):
+                    table_content = match.group(0)
+                    # Remove newlines within table tags, but keep the table structure
+                    table_content = table_content.replace('\n', '')
+                    return table_content
 
-            # Then collapse 3+ consecutive <br> tags to exactly 2
-            while '<br><br><br>' in answer:
-                answer = answer.replace('<br><br><br>', '<br><br>')
+                # Process tables separately
+                answer = re.sub(r'<table[^>]*>.*?</table>', clean_table, answer, flags=re.DOTALL | re.IGNORECASE)
+
+                # Convert remaining newlines (outside tables) to <br>
+                parts = re.split(r'(<table[^>]*>.*?</table>)', answer, flags=re.DOTALL | re.IGNORECASE)
+                for i in range(len(parts)):
+                    if not parts[i].lower().startswith('<table'):
+                        parts[i] = parts[i].replace('\n', '<br>')
+                answer = ''.join(parts)
+            else:
+                # No table: Convert newlines to HTML line breaks for better display
+                answer = answer.replace('\n', '<br>')
+
+                # Aggressively collapse excessive consecutive line breaks
+                # This is a safety net for LLM inconsistencies
+
+                # First, normalize any whitespace between <br> tags
+                answer = re.sub(r'<br>\s+<br>', '<br><br>', answer)
+
+                # Then collapse 3+ consecutive <br> tags to exactly 2
+                while '<br><br><br>' in answer:
+                    answer = answer.replace('<br><br><br>', '<br><br>')
 
             # Add overflow warning if results were truncated
             if metadata.get('truncated', False) and rows_returned >= max_rows:
