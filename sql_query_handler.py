@@ -448,7 +448,7 @@ class SQLQueryHandler:
                     elif 'phone' in col.lower() and value.strip():
                         value = f'<a href="tel:{value}">{value}</a>'
 
-                html_parts.append(f'<td style="padding: 4px; vertical-align: top;">{value}</td>')
+                html_parts.append(f'<td style="padding: 4px; vertical-align: top; white-space: nowrap;">{value}</td>')
 
             html_parts.append('</tr>')
 
