@@ -552,21 +552,24 @@ class ParentChildDocumentStore:
         Returns:
             List of parent chunk results (deduplicated)
         """
-        # Get unique parent IDs
-        parent_ids = set()
+        # Get unique parent IDs in order of child chunk relevance
+        # Child chunks are already sorted by score, so preserve that ordering
+        parent_ids_ordered = []
+        seen_parents = set()
         for child in child_chunks:
             parent_id = child['metadata'].get('parent_chunk_id')
-            if parent_id:
-                parent_ids.add(parent_id)
+            if parent_id and parent_id not in seen_parents:
+                parent_ids_ordered.append(parent_id)
+                seen_parents.add(parent_id)
 
-        if not parent_ids:
+        if not parent_ids_ordered:
             logger.warning("No parent IDs found in child chunks")
             return []
 
-        logger.debug(f"Expanding to {len(parent_ids)} unique parent chunks")
+        logger.debug(f"Found {len(parent_ids_ordered)} unique parent chunks from {len(child_chunks)} child chunks")
 
-        # Retrieve parents from collection
-        parent_ids_list = list(parent_ids)[:parent_limit]  # Limit number of parents
+        # Retrieve parents from collection (limit to top N by relevance)
+        parent_ids_list = parent_ids_ordered[:parent_limit]  # Take most relevant parents
 
         try:
             parent_results = self.parent_collection.get(
@@ -577,14 +580,20 @@ class ParentChildDocumentStore:
             # Format parent results
             parents = []
             for i in range(len(parent_results['ids'])):
+                parent_metadata = parent_results['metadatas'][i]
                 parents.append({
                     "id": parent_results['ids'][i],
                     "text": parent_results['documents'][i],
-                    "metadata": parent_results['metadatas'][i],
+                    "metadata": parent_metadata,
                     "score": 1.0  # Parents don't have relevance scores initially
                 })
 
-            logger.info(f"Expanded to {len(parents)} parent chunks")
+                # Log which sections are being sent to LLM
+                section_title = parent_metadata.get('section_title', 'Unknown')
+                doc_title = parent_metadata.get('document_title', 'Unknown')
+                logger.info(f"  Parent {i+1}: {doc_title} - Section: {section_title[:50]}")
+
+            logger.info(f"Expanded to {len(parents)} parent chunks for LLM context")
             return parents
 
         except Exception as e:
