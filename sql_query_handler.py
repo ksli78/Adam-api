@@ -163,7 +163,7 @@ class SQLQueryHandler:
             "8. Return ONLY the SQL query on a SINGLE LINE - no explanations, no markdown, no quotes, no line breaks in the SQL",
             "9. Format: SELECT TOP 1000 columns FROM table WHERE conditions",
             "\nCOMMON QUERY PATTERNS:",
-            "- 'contact info' or 'contact information' = FirstName, LastName, Email, WorkPhone, MailCode, BuildingCode, Room, OnOffSite",
+            "- 'contact info' or 'contact information' = Use LEFT JOIN to include supervisor info, select: LastName, FirstName, MiddleName, HomeDept, WorkPhone, BuildingCode, Room, MailCode, Email, supervisor's LastName, FirstName, MiddleName",
             "- 'location' or 'where does X sit' = FirstName, LastName, BuildingCode, Room, OnOffSite",
             "- 'phone' = FirstName, LastName, WorkPhone",
             "- 'email' = FirstName, LastName, Email or CompanyEmail",
@@ -424,14 +424,13 @@ CRITICAL FORMATTING RULES:
 1. Answer directly - NO preambles like "Here is..." or "The answer is..."
 2. DO NOT repeat or echo the user's question in your answer
 3. NO closing statements like "Let me know..." or notes about result count
-4. Use MINIMAL line breaks (will be converted to <br> automatically):
-   - Single line break (\n) between related fields
-   - Double line break (\n\n) ONLY for major section breaks
-   - ABSOLUTELY NO triple line breaks (\n\n\n) - this looks terrible!
-   - Keep formatting TIGHT and clean - avoid excessive whitespace
-   - Email addresses: Format as <a href="mailto:EMAIL">EMAIL</a>
-   - Phone numbers: Format as <a href="tel:PHONE">PHONE</a>
-   - Lists: Use bullet points with • or numbered lists
+4. Use appropriate formatting based on query type:
+   A. For CONTACT INFO queries (all comprehensive fields): Use HTML TABLE format
+   B. For simple queries (1-3 fields): Use simple text with line breaks
+   C. Line break rules: Single \n between fields, double \n\n for sections only
+   D. ABSOLUTELY NO triple line breaks (\n\n\n) - looks terrible!
+   E. Email addresses: Format as <a href="mailto:EMAIL">EMAIL</a>
+   F. Phone numbers: Format as <a href="tel:PHONE">PHONE</a>
 5. For names: ALWAYS use FirstName and LastName fields, NEVER use UserName field
 6. For contact info: Present as a formatted list with labels
 7. For dates: Format nicely (e.g., "January 15, 2020")
@@ -458,6 +457,9 @@ BAD: "Khaled Sliman's boss is:\\n\\n\\nColly Edgeworth, Senior Project Manager\\
 
 Question: "List employees in Engineering"
 Answer: "Engineering department employees:\\n\\n• John Smith - <a href=\\"mailto:john@company.com\\">john@company.com</a>\\n• Jane Doe - <a href=\\"mailto:jane@company.com\\">jane@company.com</a>\\n• Bob Johnson - <a href=\\"mailto:bob@company.com\\">bob@company.com</a>"
+
+Question: "Find John Smith's contact info" (comprehensive query with many fields)
+Answer: "<table border=\\"1\\" style=\\"border-collapse: collapse; width: 100%;\\">\\n<tr>\\n<th>Last Name</th><th>First Name</th><th>MI</th><th>Org Code</th><th>Phone</th><th>Building</th><th>Room</th><th>Mail Code</th><th>Email</th><th>Supervisor Last Name</th><th>Supervisor First Name</th><th>Supervisor MI</th>\\n</tr>\\n<tr>\\n<td>Smith</td><td>John</td><td>A</td><td>ENGR-001</td><td><a href=\\"tel:555-1234\\">555-1234</a></td><td>BLDG-1</td><td>404B</td><td>MC-100</td><td><a href=\\"mailto:john.smith@company.com\\">john.smith@company.com</a></td><td>Johnson</td><td>Jane</td><td>K</td>\\n</tr>\\n</table>"
 
 FORMATTED ANSWER:"""
 

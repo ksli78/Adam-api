@@ -146,6 +146,9 @@ employee_directory:
         - question: "Find John Smith"
           sql: "SELECT TOP 1000 PersonnelId, FirstName, LastName, Email, WorkPhone, BusinessTitle, HomeDept FROM vwPersonnelAll WHERE (FirstName LIKE '%John%' AND LastName LIKE '%Smith%') AND IsTerminated = 0"
 
+        - question: "Find John Smith's contact info"
+          sql: "SELECT TOP 1000 e.LastName, e.FirstName, e.MiddleName, e.HomeDept, e.WorkPhone, e.BuildingCode, e.Room, e.MailCode, e.Email, s.LastName as SupervisorLastName, s.FirstName as SupervisorFirstName, s.MiddleName as SupervisorMiddleName FROM vwPersonnelAll e LEFT JOIN vwPersonnelAll s ON e.SupervisorNo = s.EmpNo WHERE (e.FirstName LIKE '%John%' AND e.LastName LIKE '%Smith%') AND e.IsTerminated = 0"
+
         - question: "List all employees in Engineering department"
           sql: "SELECT TOP 1000 PersonnelId, FirstName, LastName, Email, BusinessTitle, HomeDept FROM vwPersonnelAll WHERE HomeDept LIKE '%Engineering%' AND IsTerminated = 0 ORDER BY LastName"
 
