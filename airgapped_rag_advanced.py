@@ -14,6 +14,7 @@ All processing runs locally - no 3rd party APIs required.
 
 import logging
 import os
+import re
 import uuid
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -580,18 +581,27 @@ class AdvancedRAGPipeline:
             # Replace newlines with HTML line breaks for better display
             answer = answer.replace('\n', '<br>')
 
-            # Build citations
+            # Extract URLs that were actually cited in the answer
+            # Inline citation format: <span><a href="URL">FileName.pdf</a></span>
+            cited_urls = set(re.findall(r'<a\s+href=["\'](https?://[^"\']+)["\']', answer))
+            logger.info(f"Found {len(cited_urls)} URLs cited in answer: {cited_urls}")
+
+            # Build citations - only include documents that were actually cited
             citations = []
             parent_chunk_ids = []
             for parent in parent_results:
-                citations.append({
-                    "source_url": parent['metadata'].get('source_url', ''),
-                    "document_title": parent['metadata'].get('document_title', 'Unknown'),
-                    "section_title": parent['metadata'].get('section_title', ''),
-                    "section_number": parent['metadata'].get('section_number', ''),
-                    "excerpt": parent['text'][:500] + "..." if len(parent['text']) > 500 else parent['text']
-                })
-                parent_chunk_ids.append(parent['id'])
+                source_url = parent['metadata'].get('source_url', '')
+
+                # Only include if this document was actually cited in the answer
+                if source_url in cited_urls:
+                    citations.append({
+                        "source_url": source_url,
+                        "document_title": parent['metadata'].get('document_title', 'Unknown'),
+                        "section_title": parent['metadata'].get('section_title', ''),
+                        "section_number": parent['metadata'].get('section_number', ''),
+                        "excerpt": parent['text'][:500] + "..." if len(parent['text']) > 500 else parent['text']
+                    })
+                    parent_chunk_ids.append(parent['id'])
 
             # Store assistant message in conversation with chunk IDs
             child_chunk_ids = [c['id'] for c in child_results]
