@@ -419,7 +419,7 @@ class SQLQueryHandler:
 USER QUESTION: {user_query}
 
 QUERY RESULTS ({rows_returned} rows):
-{json.dumps(results[:10], indent=2)}
+{json.dumps(results, indent=2)}
 
 CRITICAL FORMATTING RULES:
 1. Answer directly - NO preambles like "Here is..." or "The answer is..."
@@ -492,13 +492,19 @@ Answer: "<table style=\\"border-collapse: collapse; width: 100%;\\">
 
 FORMATTED ANSWER:"""
 
+        # Calculate dynamic token limit based on number of rows
+        # Estimate ~80 tokens per row for table formatting
+        # Add base of 500 tokens for instructions and headers
+        # Cap at 8000 tokens maximum
+        num_predict = min(8000, 500 + (rows_returned * 80))
+
         try:
             response = self.ollama_client.generate(
                 model=self.model_name,
                 prompt=prompt,
                 options={
                     "temperature": 0.3,
-                    "num_predict": 500
+                    "num_predict": num_predict
                 },
                 keep_alive=-1
             )
