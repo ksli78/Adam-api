@@ -459,10 +459,12 @@ class ParentChildDocumentStore:
 
             semantic_score = semantic_scores.get(chunk_id, 0.0)
 
-            # Skip chunks with very low semantic relevance
-            # Even with perfect keyword match, if semantic score is near 0, document is likely irrelevant
-            # Example: "Does amentum have a dress code" matching doc that only contains "Amentum"
-            if semantic_score < MIN_SEMANTIC_THRESHOLD:
+            # Skip chunks with very low semantic relevance, but with an important exception:
+            # Only apply semantic threshold to chunks with moderate BM25 scores.
+            # If BM25 passes threshold (>=0.85), trust it even with low semantic score.
+            # This handles cases where relevant chunks aren't in top-30 semantic results.
+            # Example: PTO policy chunks may have BM25=0.855 but semantic=0.0 if not in top-30.
+            if semantic_score < MIN_SEMANTIC_THRESHOLD and bm25_score < MIN_BM25_THRESHOLD:
                 logger.info(
                     f"Filtered out chunk {chunk_id[:8]}... - "
                     f"low semantic relevance (BM25={bm25_score:.3f}, semantic={semantic_score:.3f})"
