@@ -424,13 +424,14 @@ CRITICAL FORMATTING RULES:
 1. Answer directly - NO preambles like "Here is..." or "The answer is..."
 2. DO NOT repeat or echo the user's question in your answer
 3. NO closing statements like "Let me know..." or notes about result count
-4. Use appropriate formatting based on query type:
-   A. For CONTACT INFO queries (all comprehensive fields): Use HTML TABLE format
-   B. For simple queries (1-3 fields): Use simple text with line breaks
-   C. Line break rules: Single \n between fields, double \n\n for sections only
-   D. ABSOLUTELY NO triple line breaks (\n\n\n) - looks terrible!
-   E. Email addresses: Format as <a href="mailto:EMAIL">EMAIL</a>
-   F. Phone numbers: Format as <a href="tel:PHONE">PHONE</a>
+4. Use MINIMAL line breaks (will be converted to <br> automatically):
+   - Single line break (\n) between related fields
+   - Double line break (\n\n) ONLY for major section breaks
+   - ABSOLUTELY NO triple line breaks (\n\n\n) - this looks terrible!
+   - Keep formatting TIGHT and clean - avoid excessive whitespace
+   - Email addresses: Format as <a href="mailto:EMAIL">EMAIL</a>
+   - Phone numbers: Format as <a href="tel:PHONE">PHONE</a>
+   - Lists: Use bullet points with • or numbered lists
 5. For names: ALWAYS use FirstName and LastName fields, NEVER use UserName field
 6. For contact info: Present as a formatted list with labels
 7. For dates: Format nicely (e.g., "January 15, 2020")
@@ -448,7 +449,7 @@ GOOD: "Colly works for the ENGR-003 department."
 BAD: "What department does Colly work for? Colly works for..." ← DON'T echo question!
 
 Question: "What is John Smith's contact info?"
-GOOD: "John Smith's contact information:\\n\\nEmail: <a href=\\"mailto:john.smith@company.com\\">john.smith@company.com</a>\\nPhone: <a href=\\"tel:555-1234\\">555-1234</a>\\nBuilding: 101, Room: 205\\nMail Code: MC-1234"
+GOOD: "John Smith's contact information:\\n\\nName: John A Smith\\nOrg Code: ENGR-001\\nPhone: <a href=\\"tel:555-1234\\">555-1234</a>\\nBuilding: BLDG-1, Room: 404B\\nMail Code: MC-100\\nEmail: <a href=\\"mailto:john.smith@company.com\\">john.smith@company.com</a>\\nSupervisor: Jane K Johnson"
 BAD: "John Smith's contact information:\\n\\n\\n\\nEmail..." ← Too many line breaks!
 
 Question: "Who is Khaled's boss?"
@@ -457,9 +458,6 @@ BAD: "Khaled Sliman's boss is:\\n\\n\\nColly Edgeworth, Senior Project Manager\\
 
 Question: "List employees in Engineering"
 Answer: "Engineering department employees:\\n\\n• John Smith - <a href=\\"mailto:john@company.com\\">john@company.com</a>\\n• Jane Doe - <a href=\\"mailto:jane@company.com\\">jane@company.com</a>\\n• Bob Johnson - <a href=\\"mailto:bob@company.com\\">bob@company.com</a>"
-
-Question: "Find John Smith's contact info" (comprehensive query with many fields)
-Answer: "<table border=\\"1\\" style=\\"border-collapse: collapse; width: 100%;\\">\\n<tr>\\n<th>Last Name</th><th>First Name</th><th>MI</th><th>Org Code</th><th>Phone</th><th>Building</th><th>Room</th><th>Mail Code</th><th>Email</th><th>Supervisor Last Name</th><th>Supervisor First Name</th><th>Supervisor MI</th>\\n</tr>\\n<tr>\\n<td>Smith</td><td>John</td><td>A</td><td>ENGR-001</td><td><a href=\\"tel:555-1234\\">555-1234</a></td><td>BLDG-1</td><td>404B</td><td>MC-100</td><td><a href=\\"mailto:john.smith@company.com\\">john.smith@company.com</a></td><td>Johnson</td><td>Jane</td><td>K</td>\\n</tr>\\n</table>"
 
 FORMATTED ANSWER:"""
 
