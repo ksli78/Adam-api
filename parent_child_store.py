@@ -395,9 +395,12 @@ class ParentChildDocumentStore:
             bm25_scores_normalized = bm25_scores
 
         # Step 4: Get semantic search scores (fetch more for fusion)
+        # With large document collections, we need to retrieve enough semantic results
+        # to ensure relevant chunks get semantic scores (not just 0.0 from being outside top-N)
+        semantic_top_k = min(max(top_k * 10, 100), len(all_chunks['ids']))  # At least 100 or 10x top_k
         semantic_results = self._semantic_search(
             query=query,
-            top_k=min(top_k * 3, len(all_chunks['ids'])),  # Get 3x for better fusion
+            top_k=semantic_top_k,
             metadata_filter=metadata_filter
         )
 
@@ -459,12 +462,10 @@ class ParentChildDocumentStore:
 
             semantic_score = semantic_scores.get(chunk_id, 0.0)
 
-            # Skip chunks with very low semantic relevance, but with an important exception:
-            # Only apply semantic threshold to chunks with moderate BM25 scores.
-            # If BM25 passes threshold (>=0.85), trust it even with low semantic score.
-            # This handles cases where relevant chunks aren't in top-30 semantic results.
-            # Example: PTO policy chunks may have BM25=0.855 but semantic=0.0 if not in top-30.
-            if semantic_score < MIN_SEMANTIC_THRESHOLD and bm25_score < MIN_BM25_THRESHOLD:
+            # Require BOTH strong keyword match AND semantic relevance
+            # This prevents keyword pollution (e.g., EN-PR-0051 with "paid time off" in keywords)
+            # By retrieving 100+ semantic results above, relevant docs get proper semantic scores
+            if semantic_score < MIN_SEMANTIC_THRESHOLD:
                 logger.info(
                     f"Filtered out chunk {chunk_id[:8]}... - "
                     f"low semantic relevance (BM25={bm25_score:.3f}, semantic={semantic_score:.3f})"
