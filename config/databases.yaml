@@ -1,0 +1,176 @@
+# Database configurations for SQL query systems
+# Passwords should be set via environment variables
+
+employee_directory:
+  enabled: true
+  database_type: "mssql"
+
+  connection:
+    server: "localhost"
+    port: 1433
+    database: "Corporate"
+    user: "svcasm-adamAi"
+    password_env: "EMPLOYEE_DB_PASSWORD"  # Set via environment variable
+    driver: "ODBC Driver 17 for SQL Server"
+    # For Windows Authentication in production, set use_windows_auth: true
+    use_windows_auth: false
+
+  security:
+    max_rows: 1000
+    query_timeout_seconds: 30
+    allowed_tables: ["vwPersonnelAll"]
+    allowed_views: ["vwPersonnelAll"]
+    # Sensitive columns that should require special justification or be excluded
+    sensitive_columns: ["AnnualRate"]
+
+  schema:
+    vwPersonnelAll:
+      description: "Personnel information including internal and external employees"
+      type: "view"
+      columns:
+        - name: PersonnelId
+          type: "INT"
+          description: "Unique personnel identifier"
+
+        - name: EmpNo
+          type: "VARCHAR"
+          description: "Employee number"
+
+        - name: SupervisorNo
+          type: "VARCHAR"
+          description: "Supervisor's employee number"
+
+        - name: UserName
+          type: "VARCHAR"
+          description: "Username (typically AD username)"
+
+        - name: AltUserName
+          type: "VARCHAR" 
+          description: "Alternate username"
+
+        - name: FirstName
+          type: "VARCHAR"
+          description: "First name"
+
+        - name: MiddleName
+          type: "VARCHAR"
+          description: "Middle name"
+
+        - name: LastName
+          type: "VARCHAR"
+          description: "Last name"
+
+        - name: BusinessTitle
+          type: "VARCHAR"
+          description: "Job title or business title"
+
+        - name: HomeDept
+          type: "VARCHAR"
+          description: "Home department"
+
+        - name: Company
+          type: "VARCHAR"
+          description: "Company name"
+
+        - name: CompanyEmail
+          type: "VARCHAR"
+          description: "Company email address"
+
+        - name: Email
+          type: "VARCHAR"
+          description: "Email address"
+
+        - name: WorkPhone
+          type: "VARCHAR"
+          description: "Work phone number"
+
+        - name: OnOffSite
+          type: "VARCHAR"
+          description: "On-site or off-site status"
+
+        - name: BuildingCode
+          type: "VARCHAR"
+          description: "Building code/location"
+
+        - name: Room
+          type: "VARCHAR"
+          description: "Room number"
+
+        - name: MailCode
+          type: "VARCHAR"
+          description: "Mail code"
+
+        - name: HireDate
+          type: "DATETIME"
+          description: "Date employee was hired"
+
+        - name: IsTerminated
+          type: "BIT"
+          description: "Whether employee is terminated (0=active, 1=terminated)"
+
+        - name: TerminationDate
+          type: "DATETIME"
+          description: "Date of termination if terminated"
+
+        - name: AnnualRate
+          type: "DECIMAL"
+          description: "Annual salary rate (SENSITIVE)"
+          sensitive: true
+
+        - name: Grade
+          type: "VARCHAR"
+          description: "Employee grade level"
+
+        - name: JobCode
+          type: "VARCHAR"
+          description: "Job code"
+
+        - name: JobCodeTitle
+          type: "VARCHAR"
+          description: "Job code title/description"
+
+        - name: SF330
+          type: "VARCHAR"
+          description: "SF330 designation"
+
+        - name: StandardLaborCategory
+          type: "VARCHAR"
+          description: "Standard labor category"
+
+        - name: IsExternal
+          type: "BIT"
+          description: "Whether employee is external (0=internal, 1=external)"
+
+      # Example queries to help the LLM understand common patterns
+      example_queries:
+        - question: "Find John Smith"
+          sql: "SELECT TOP 1000 FirstName, LastName, Email, WorkPhone, BusinessTitle, HomeDept FROM vwPersonnelAll WHERE (FirstName LIKE '%John%' AND LastName LIKE '%Smith%') AND IsTerminated = 0"
+
+        - question: "Find John Smith's contact info"
+          sql: "SELECT TOP 1000 e.LastName, e.FirstName, e.MiddleName, e.HomeDept, e.WorkPhone, e.BuildingCode, e.Room, e.MailCode, e.Email, s.LastName as SupervisorLastName, s.FirstName as SupervisorFirstName, s.MiddleName as SupervisorMiddleName FROM vwPersonnelAll e LEFT JOIN vwPersonnelAll s ON e.SupervisorNo = s.EmpNo WHERE (e.FirstName LIKE '%John%' AND e.LastName LIKE '%Smith%') AND e.IsTerminated = 0"
+
+        - question: "List all employees in Engineering department"
+          sql: "SELECT TOP 1000 FirstName, LastName, Email, BusinessTitle, HomeDept FROM vwPersonnelAll WHERE HomeDept LIKE '%Engineering%' AND IsTerminated = 0 ORDER BY LastName"
+
+        - question: "Show employees hired in 2024"
+          sql: "SELECT TOP 1000 FirstName, LastName, Email, HireDate, BusinessTitle FROM vwPersonnelAll WHERE YEAR(HireDate) = 2024 AND IsTerminated = 0 ORDER BY HireDate DESC"
+
+        - question: "Find employees with 'Manager' in their title"
+          sql: "SELECT TOP 1000 FirstName, LastName, Email, BusinessTitle, HomeDept FROM vwPersonnelAll WHERE BusinessTitle LIKE '%Manager%' AND IsTerminated = 0"
+
+        - question: "Who works in building 101?"
+          sql: "SELECT TOP 1000 FirstName, LastName, Email, BuildingCode, Room FROM vwPersonnelAll WHERE BuildingCode = '101' AND IsTerminated = 0"
+
+        - question: "Who does John Smith report to?"
+          sql: "SELECT TOP 1000 e.EmpNo, e.FirstName + ' ' + e.LastName as Employee, s.FirstName + ' ' + s.LastName as Supervisor, s.Email as SupervisorEmail, s.WorkPhone as SupervisorPhone, s.BusinessTitle as SupervisorTitle FROM vwPersonnelAll e LEFT JOIN vwPersonnelAll s ON e.SupervisorNo = s.EmpNo WHERE (e.FirstName LIKE '%John%' AND e.LastName LIKE '%Smith%') AND e.IsTerminated = 0"
+
+        - question: "Who reports to Jane Doe?"
+          sql: "SELECT TOP 1000 e.FirstName + ' ' + e.LastName as Employee, e.Email, e.WorkPhone, e.BusinessTitle FROM vwPersonnelAll e INNER JOIN vwPersonnelAll m ON e.SupervisorNo = m.EmpNo WHERE (m.FirstName LIKE '%Jane%' AND m.LastName LIKE '%Doe%') AND e.IsTerminated = 0 AND m.IsTerminated = 0 ORDER BY e.LastName"
+
+        - question: "Show John Smith and his manager"
+          sql: "SELECT TOP 1000 e.FirstName as EmployeeFirstName, e.LastName as EmployeeLastName, e.Email as EmployeeEmail, e.BusinessTitle as EmployeeTitle, s.FirstName as ManagerFirstName, s.LastName as ManagerLastName, s.Email as ManagerEmail, s.BusinessTitle as ManagerTitle FROM vwPersonnelAll e LEFT JOIN vwPersonnelAll s ON e.SupervisorNo = s.EmpNo WHERE (e.FirstName LIKE '%John%' AND e.LastName LIKE '%Smith%') AND e.IsTerminated = 0"
+
+# Purchasing system configuration (disabled for now)
+purchasing_system:
+  enabled: false
+  # Will be configured when purchasing database schema is provided

@@ -1,17 +1,87 @@
-# Air-Gapped RAG API with Haystack
+# Adam - Amentum Document Assistant and Manager
 
-Production-ready Retrieval-Augmented Generation (RAG) system using **Haystack 2.x**, **Ollama**, and **ChromaDB**.
+Production-ready AI-powered RAG (Retrieval-Augmented Generation) system for intelligent document search and question answering.
 
-## 🎯 Key Features
+## 🎯 Overview
 
-- ✅ **Hybrid Retrieval**: BM25 (keyword) + Semantic (embeddings) for best accuracy
-- ✅ **Automatic Reranking**: Cross-encoder reranker for improved relevance
-- ✅ **100% Air-Gapped**: No external API calls, all processing local
-- ✅ **Local LLMs**: Ollama (Llama 3) for generation
-- ✅ **FastAPI**: Modern async Python REST API
-- ✅ **Battle-Tested**: Haystack framework used in production by many companies
+**Adam** is a sophisticated, fully air-gapped RAG system that helps users find information in company documents using advanced AI techniques. Built with production-grade components and designed for enterprise use.
+
+### Key Features
+
+✅ **Intelligent Hybrid Search** - Combines BM25 keyword matching with semantic AI understanding
+✅ **Parent-Child Chunking** - Retrieves precise chunks, provides rich context
+✅ **Feedback Learning** - Continuously improves from user ratings
+✅ **System Query Handling** - Automatically detects and answers meta-queries
+✅ **Semantic Relevance Filtering** - Prevents irrelevant keyword-only matches
+✅ **100% Air-Gapped** - No external API calls, fully local processing
+✅ **Document Citations** - Every answer includes source references
+
+## 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                     User Query                           │
+└────────────────┬────────────────────────────────────────┘
+                 │
+                 ▼
+         ┌───────────────┐
+         │  Classifier   │ → System Query → Direct Response
+         │ (LLM-based)   │
+         └───────┬───────┘
+                 │
+                 │ Document Query
+                 ▼
+         ┌──────────────┐
+         │ Hybrid Search│
+         │ BM25 + AI    │
+         └──────┬───────┘
+                │
+                ▼
+    ┌────────────────────────┐
+    │ Child Chunks (precise) │
+    └────────┬───────────────┘
+             │
+             ▼
+    ┌────────────────────────┐
+    │ Parent Chunks (context)│
+    └────────┬───────────────┘
+             │
+             ▼
+         ┌────────┐
+         │  LLM   │ → Answer + Citations
+         │(Ollama)│
+         └────────┘
+```
+
+## 📦 Components
+
+### Core Modules
+
+- **`airgapped_rag_advanced.py`** - Main FastAPI application
+- **`parent_child_store.py`** - Hybrid search with feedback weighting
+- **`query_classifier.py`** - System vs document query detection
+- **`feedback_store.py`** - User feedback storage and analytics
+- **`semantic_chunker.py`** - Intelligent document chunking
+- **`document_cleaner.py`** - Document cleaning and preprocessing
+- **`metadata_extractor.py`** - LLM-based metadata extraction
+
+### Key Technologies
+
+- **FastAPI** - Modern async REST API framework
+- **ChromaDB** - Vector database for embeddings
+- **Ollama** - Local LLM inference (Llama 3)
+- **Sentence Transformers** - Local embedding models
+- **Docling** - Structure-aware PDF extraction
+- **BM25** - Keyword-based retrieval
+- **SQLite** - Feedback and analytics storage
 
 ## 🚀 Quick Start
+
+### Prerequisites
+
+- Python 3.10+
+- Docker (for Ollama)
+- 8GB+ RAM recommended
 
 ### 1. Install Dependencies
 
@@ -19,233 +89,191 @@ Production-ready Retrieval-Augmented Generation (RAG) system using **Haystack 2.
 pip install -r requirements.txt
 ```
 
-**Note**: First run downloads models (~400MB):
-- `sentence-transformers/all-MiniLM-L6-v2` for embeddings
-- `cross-encoder/ms-marco-MiniLM-L-6-v2` for reranking
+**Note**: First run downloads models (~500MB):
+- `all-MiniLM-L6-v2` for embeddings (local AI)
+- Ollama models pulled separately
 
-### 2. Start Ollama
+### 2. Start Ollama (if not running)
 
 ```bash
-# Windows (Docker)
-docker-compose -f docker-compose.ollama.yml up -d
-docker exec ollama-airgapped-rag ollama pull llama3:8b
-
-# Linux/Mac (Native)
-ollama serve
-ollama pull llama3:8b
+# Already running on your system
+# Ensure llama3:8b model is available:
+docker exec <ollama-container> ollama pull llama3:8b
 ```
 
 ### 3. Run the API
 
 ```bash
-python run_haystack.py
+python run_advanced.py
 ```
 
-API available at: `http://127.0.0.1:8000`
+API available at: **http://localhost:8000**
+Interactive docs: **http://localhost:8000/docs**
 
-Browse interactive docs: `http://127.0.0.1:8000/docs`
+## 🐳 Docker Deployment
 
-## 📚 Documentation
+See **[DOCKER_BUILD.md](DOCKER_BUILD.md)** for complete Docker build and deployment instructions.
 
-See **[README_HAYSTACK.md](README_HAYSTACK.md)** for complete documentation including:
-- Architecture and pipelines
-- Configuration options
-- Troubleshooting
-- Air-gapped deployment
-- API usage examples
-
-## 🛠️ Technology Stack
-
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| **RAG Framework** | Haystack 2.x | Pipeline orchestration |
-| **Keyword Search** | BM25 | Exact term matching |
-| **Semantic Search** | Sentence Transformers | Embedding-based retrieval |
-| **Reranking** | Cross-Encoder | Result quality improvement |
-| **LLM** | Ollama (Llama 3) | Answer generation |
-| **Vector DB** | ChromaDB (In-Memory) | Document storage |
-| **API Framework** | FastAPI | REST API server |
-| **PDF Processing** | PyMuPDF | Document ingestion |
-
-## 📊 API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | System health check |
-| `/upload-document` | POST | Upload PDF with source URL |
-| `/query` | POST | Query with hybrid retrieval |
-| `/documents` | GET | List all documents |
-| `/documents/{id}` | DELETE | Delete document |
-| `/debug-search` | POST | Debug retrieval with scores |
-
-## 🧪 Usage Examples
-
-### Upload a Document
-
+Quick start:
 ```bash
-curl -X POST http://127.0.0.1:8000/upload-document \
-  -F "file=@EN-PO-0301.pdf" \
-  -F "source_url=https://example.com/EN-PO-0301.pdf"
+docker-compose up -d
 ```
 
-### Query (Hybrid Search)
+## 📖 Documentation
 
-```bash
-curl -X POST http://127.0.0.1:8000/query \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "What is the PTO Policy",
-    "top_k": 3,
-    "use_hybrid": true
-  }'
-```
-
-Response:
-```json
-{
-  "answer": "According to Document 1 (EN-PO-0301), PTO is a paid time off program established to grant time off with pay for eligible employees...",
-  "citations": [
-    {
-      "source_url": "https://example.com/EN-PO-0301.pdf",
-      "excerpt": "4.3 PTO—PTO is a paid time off program..."
-    }
-  ]
-}
-```
-
-### List Documents
-
-```bash
-curl http://127.0.0.1:8000/documents
-```
-
-### Debug Search
-
-```bash
-curl -X POST http://127.0.0.1:8000/debug-search \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "What is the PTO Policy",
-    "top_k": 5,
-    "use_hybrid": true
-  }'
-```
+- **[README_ADVANCED_RAG.md](README_ADVANCED_RAG.md)** - Complete system documentation
+- **[SYSTEM_QUERIES.md](SYSTEM_QUERIES.md)** - System query handling guide
+- **[DOCKER_BUILD.md](DOCKER_BUILD.md)** - Docker deployment guide
+- **[SHAREPOINT_INTEGRATION_SUMMARY.md](SHAREPOINT_INTEGRATION_SUMMARY.md)** - SharePoint integration
 
 ## 🔧 Configuration
 
 Environment variables:
 
 ```bash
-# Data directory
-DATA_DIR=/data/airgapped_rag
-
-# Ollama
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_LLM_MODEL=llama3:8b
-
-# Embedding model
-EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
-
-# Reranker model
-RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
+DATA_DIR=/data/airgapped_rag         # Data storage directory
+OLLAMA_HOST=http://localhost:11434   # Ollama server URL
+LLM_MODEL=llama3:8b                  # LLM model to use
 ```
 
-## 📁 Project Structure
+## 📊 API Endpoints
 
-```
-Adam-api/
-├── 📄 airgapped_rag_haystack.py    # Main API application
-├── 📄 run_haystack.py              # Simple runner script
-├── 📄 requirements.txt             # Python dependencies
-│
-├── 🐳 docker-compose.ollama.yml    # Ollama for development
-├── 🐳 docker-compose.airgapped.yml # Full stack for production
-├── 🐳 Dockerfile.airgapped         # API container (RHEL UBI9)
-│
-├── 🔧 setup-ollama-models.sh       # Pull Ollama models
-├── 🔧 export-for-rhel9.ps1         # Export for RHEL9
-├── 🔧 deploy-rhel9.sh              # Deploy on RHEL9
-│
-└── 📖 README_HAYSTACK.md           # Complete documentation
-```
+### Document Management
 
-## 🚀 Why Haystack?
+- `POST /upload-document` - Upload and process PDF documents
+- `GET /documents` - List all indexed documents
+- `DELETE /documents/{id}` - Delete a specific document
+- `DELETE /documents` - Clear all documents
 
-**Before** (Custom Regex-Based):
-- ❌ Manual topic extraction with fragile regex
-- ❌ Semantic search only (missed exact keywords)
-- ❌ No reranking (poor result quality)
-- ❌ Breaks on formatting changes (em-dashes, etc.)
+### Query & Search
 
-**After** (Haystack Framework):
-- ✅ Hybrid search (BM25 + semantic)
-- ✅ Automatic reranking with cross-encoder
-- ✅ Battle-tested by production users
-- ✅ Robust to document formatting
-- ✅ 85-95% accuracy vs 60-70%
+- `POST /query` - Ask questions about documents
+  - Automatic system vs document query classification
+  - Hybrid search with relevance filtering
+  - Returns answer with citations
 
-## 🌐 Air-Gapped Deployment
+### Feedback System
 
-Fully air-gapped compatible:
+- `POST /feedback` - Submit user feedback (good/bad)
+- `GET /feedback/analytics` - View satisfaction metrics
+- `GET /feedback/recent` - View recent feedback
 
-1. **Pre-download models** on internet-connected machine:
-   ```bash
-   pip install -r requirements.txt  # Downloads models to cache
-   ```
+### Utilities
 
-2. **Copy model cache** to air-gapped machine:
-   - Windows: `C:\Users\<user>\.cache\huggingface`
-   - Linux: `~/.cache/huggingface`
+- `GET /statistics` - System statistics
+- `GET /health` - Health check
+- `GET /debug/document/{id}` - Inspect document chunks
 
-3. **Deploy** - models load from cache
+## 💡 Usage Examples
 
-See [README_HAYSTACK.md](README_HAYSTACK.md) for detailed air-gapped deployment instructions.
-
-## 📦 System Requirements
-
-### Minimum
-- **RAM**: 8 GB
-- **Disk**: 10 GB (models + documents)
-- **CPU**: 4 cores
-
-### Recommended
-- **RAM**: 16 GB
-- **Disk**: 50 GB
-- **CPU**: 8 cores
-
-## 🆘 Troubleshooting
-
-### "Model not found"
-
-First run downloads models from HuggingFace. Requires internet.
-
-For air-gapped: Pre-download models (see above)
-
-### "Ollama connection failed"
+### Upload a Document
 
 ```bash
-# Check Ollama is running
-curl http://localhost:11434/api/tags
-
-# Restart Ollama
-docker restart ollama-airgapped-rag
+curl -X POST "http://localhost:8000/upload-document" \
+  -F "file=@policy.pdf" \
+  -F "source_url=https://portal.example.com/policy.pdf"
 ```
 
-### "Out of memory"
+### Ask a Question
 
-Use smaller models:
 ```bash
-EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L12-v2
+curl -X POST "http://localhost:8000/query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "What is the PTO policy?",
+    "use_hybrid": true,
+    "bm25_weight": 0.5
+  }'
 ```
 
-## 📞 Support
+### Submit Feedback
 
-- **Complete Documentation**: [README_HAYSTACK.md](README_HAYSTACK.md)
-- **Haystack Docs**: https://docs.haystack.deepset.ai/
-- **Ollama Docs**: https://ollama.ai/docs
+```bash
+curl -X POST "http://localhost:8000/feedback" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What is the PTO policy?",
+    "answer": "PTO varies by years of service...",
+    "feedback_type": "good",
+    "retrieval_stats": {...}
+  }'
+```
+
+## 🎓 How It Works
+
+### 1. Document Ingestion
+
+```
+PDF → Docling Extraction → Cleaning → Semantic Chunking → Metadata Extraction → ChromaDB Storage
+```
+
+- **Docling** preserves document structure
+- **Cleaning** removes headers, footers, noise
+- **Chunking** creates parent (context) and child (precise) chunks
+- **Metadata** extracted with LLM for better retrieval
+- **Storage** in dual ChromaDB collections
+
+### 2. Query Processing
+
+```
+Query → Classification → Routing → Retrieval → Answer Generation
+```
+
+**System Queries** (e.g., "What can you do?"):
+- Detected by LLM classifier
+- Responded directly with system info
+- No document retrieval
+
+**Document Queries** (e.g., "What is the PTO policy?"):
+- Hybrid search (BM25 + semantic)
+- Relevance filtering (BM25 >= 0.95, semantic >= 0.2)
+- Feedback weighting (15% boost/demote based on history)
+- Parent chunk expansion for context
+- LLM generates answer with citations
+
+### 3. Feedback Learning
+
+```
+User Rates → Store Feedback → Update Chunk Scores → Influence Future Retrievals
+```
+
+- Tracks good/bad feedback per chunk
+- Calculates quality scores (-1.0 to +1.0)
+- Applies 15% adjustment in future searches
+- Provides analytics on best/worst content
+
+## 🔒 Security & Privacy
+
+- ✅ **100% Air-Gapped** - No external API calls
+- ✅ **Local Processing** - All AI runs locally
+- ✅ **Data Privacy** - Documents never leave your infrastructure
+- ✅ **Persistent Storage** - Data survives restarts
+
+## 📈 Performance
+
+- **Ingestion**: ~10-30 seconds per PDF (depending on size)
+- **Query**: ~2-5 seconds (including LLM generation)
+- **Concurrent Users**: Supports multiple simultaneous queries
+- **Scalability**: Single worker recommended for air-gapped use
+
+## 🤝 Contributing
+
+This system is built for enterprise use. For issues or enhancements:
+
+1. Check existing documentation
+2. Review logs for error details
+3. Submit feedback through the API
+
+## 📄 License
+
+Proprietary - Amentum Corporation
+
+## 🆘 Support
+
+- Documentation: See files in this repository
+- API Docs: http://localhost:8000/docs (when running)
+- Logs: Check console output and application logs
 
 ---
 
-**Version**: 2.0.0 (Haystack)
-**Target Environment**: Windows Development → RHEL9 Production
-**Air-Gapped**: Yes ✅
+**Adam v2.0** - Built with ❤️ for intelligent document search
