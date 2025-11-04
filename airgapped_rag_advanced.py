@@ -562,6 +562,81 @@ async def health_check():
     return {"status": "healthy", "version": "2.0.0"}
 
 
+@app.get("/acronyms")
+async def get_acronyms():
+    """
+    Get all acronym expansions.
+
+    Returns the current acronym expansion mappings used for query expansion.
+    These help the system understand domain-specific acronyms like PTO, HR, etc.
+    """
+    try:
+        from parent_child_store import get_acronym_expansions
+        acronyms = get_acronym_expansions()
+
+        return {
+            "acronyms": acronyms,
+            "count": len(acronyms),
+            "message": "Acronym expansions loaded successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error getting acronyms: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/acronyms")
+async def update_acronyms(acronyms: Dict[str, str]):
+    """
+    Update acronym expansions.
+
+    Replaces the entire acronym expansion dictionary. To add/modify a single
+    acronym, include all existing acronyms plus the new one.
+
+    Request body should be a JSON object with acronym -> expansion mappings:
+    {
+        "pto": "Paid Time Off (PTO)",
+        "hr": "Human Resources (HR)",
+        "new_acronym": "New Expansion (NEW_ACRONYM)"
+    }
+
+    The changes are saved to config/acronyms.json and take effect immediately.
+    """
+    try:
+        from parent_child_store import save_acronym_expansions
+
+        # Validate that all values are non-empty strings
+        for acronym, expansion in acronyms.items():
+            if not isinstance(acronym, str) or not acronym.strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid acronym key: '{acronym}' must be a non-empty string"
+                )
+            if not isinstance(expansion, str) or not expansion.strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid expansion for '{acronym}': must be a non-empty string"
+                )
+
+        # Convert all acronyms to lowercase for consistency
+        normalized_acronyms = {k.lower(): v for k, v in acronyms.items()}
+
+        # Save to file (this also updates the global cache)
+        save_acronym_expansions(normalized_acronyms)
+
+        logger.info(f"Updated {len(normalized_acronyms)} acronym expansions")
+
+        return {
+            "message": "Acronym expansions updated successfully",
+            "count": len(normalized_acronyms),
+            "acronyms": normalized_acronyms
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating acronyms: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/debug/document/{document_id}")
 async def debug_document(document_id: str):
     """
