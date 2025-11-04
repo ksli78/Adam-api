@@ -1,66 +1,43 @@
-# --- pinned to avoid NumPy 2 ABI breakage with faiss ---
+# --- Core dependencies pinned for stability ---
 numpy==1.26.4
-faiss-cpu==1.8.0  # wheels built against numpy<2
 # --- end pins ---
 
 # PyTorch with CUDA 11.8 support for GPU acceleration
 --extra-index-url https://download.pytorch.org/whl/cu118
 torch==2.1.0+cu118
-torchvision==0.16.0+cu118
-torchaudio==2.1.0+cu118
 
-# ADAM RAG dependencies
-#
-# This requirements file lists the third‑party Python packages needed to
-# run the ADAM (Amentum Document Assistance Model) RAG system.  It
-# includes web serving (FastAPI + Uvicorn), document conversion (Docling),
-# vector search (Faiss), embeddings and reranking (SentenceTransformers),
-# generative models (Transformers + Torch), and basic scientific
-# computing (NumPy, scikit‑learn).  Pin versions as appropriate for your
-# environment; the versions below mirror those used in the provided
-# Dockerfile for reproducible builds.
-#numpy>=1.26.4
-#faiss-cpu==1.8.0.post5
+# ADAM RAG Core Dependencies
+# FastAPI web framework and server
 fastapi==0.110.1
 uvicorn[standard]==0.27.1
 pydantic
-scikit-learn==1.5.0
-#sentence-transformers==2.6.1
-#transformers==4.40.2
-#docling>=2.8,<3
-docling
-python-multipart
-#rank_bm25>=0.2.2
+python-multipart  # Required for file uploads in FastAPI
 
+# Document processing
+docling>=2.8,<3  # Structure-aware PDF extraction
+
+# Embedding and ML models
+sentence-transformers==3.2.0
 transformers==4.48.1
 tokenizers
-sentence-transformers==3.2.0
 huggingface_hub==0.25.2
 safetensors==0.4.5
-accelerate==0.34.2
+accelerate==0.34.2  # GPU acceleration for transformers
 
-# Retrieval helpers
-rapidfuzz==3.9.2
+# Vector database and retrieval
+chromadb>=0.4.0
 rank_bm25==0.2.2
-pyspellchecker>=0.7.0  # Spell correction for query typos
+rapidfuzz==3.9.2  # Optional: Used by chromadb for fuzzy matching (may cause install issues on Windows)
+
+# LLM integration
+ollama>=0.1.0
+
+# Natural language processing
+nltk>=3.8.1
+regex>=2023.0.0
+
+# Configuration
+pyyaml>=6.0
 
 # SQL Database connectivity
 pyodbc>=4.0.39  # MS SQL Server connector
-
-# Air-gapped RAG with Ollama and Haystack
-chromadb>=0.4.0
-ollama>=0.1.0
-pypdf>=3.0.0
-PyMuPDF>=1.23.0
-
-# Haystack for RAG pipelines
-haystack-ai>=2.0.0
-chroma-haystack>=0.18.0
-
-# Advanced text processing for semantic chunking and cleaning
-nltk>=3.8.1
-regex>=2023.0.0
-pyyaml>=6.0
-
-# Semantic text splitting (alternative to LlamaIndex)
-semantic-text-splitter>=0.13.0
