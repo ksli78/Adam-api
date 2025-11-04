@@ -427,12 +427,10 @@ class ParentChildDocumentStore:
         )
 
         # Debug: Log top 5 semantic and BM25 scores
-        logger.info(
-            f"Top 5 semantic scores: {[f'{r[\"semantic_score\"]:.3f}' for r in top_results[:5]]}"
-        )
-        logger.info(
-            f"Top 5 BM25 scores: {[f'{r[\"bm25_score\"]:.3f}' for r in top_results[:5]]}"
-        )
+        top5_semantic = [f"{r['semantic_score']:.3f}" for r in top_results[:5]]
+        top5_bm25 = [f"{r['bm25_score']:.3f}" for r in top_results[:5]]
+        logger.info(f"Top 5 semantic scores: {top5_semantic}")
+        logger.info(f"Top 5 BM25 scores: {top5_bm25}")
 
         return top_results
 
