@@ -432,6 +432,15 @@ class ParentChildDocumentStore:
         logger.info(f"Top 5 semantic scores: {top5_semantic}")
         logger.info(f"Top 5 BM25 scores: {top5_bm25}")
 
+        # Debug: Log which documents are in top results
+        for i, result in enumerate(top_results[:10], 1):
+            doc_title = result['metadata'].get('document_title', 'Unknown')
+            section = result['metadata'].get('section_title', 'Unknown')
+            logger.info(
+                f"Rank {i}: {doc_title} - {section} "
+                f"(semantic={result['semantic_score']:.3f}, BM25={result['bm25_score']:.3f}, fused={result['score']:.3f})"
+            )
+
         return top_results
 
     def _expand_to_parents(
@@ -482,6 +491,14 @@ class ParentChildDocumentStore:
                 })
 
             logger.info(f"Expanded to {len(parents)} parent chunks")
+
+            # Debug: Log which parent chunks were retrieved
+            for i, parent in enumerate(parents, 1):
+                logger.info(
+                    f"Parent {i}: {parent['metadata'].get('document_title', 'Unknown')} - "
+                    f"{parent['metadata'].get('section_title', 'Unknown')}"
+                )
+
             return parents
 
         except Exception as e:
