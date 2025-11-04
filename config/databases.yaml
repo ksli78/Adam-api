@@ -45,7 +45,7 @@ employee_directory:
           description: "Username (typically AD username)"
 
         - name: AltUserName
-          type: "VARCHAR"
+          type: "VARCHAR" 
           description: "Alternate username"
 
         - name: FirstName
