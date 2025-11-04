@@ -310,15 +310,15 @@ class ParentChildDocumentStore:
         bm25_weight: float = 0.5
     ) -> List[Dict[str, Any]]:
         """
-        Hybrid search combining BM25 (keyword) and semantic (embedding) search.
+        Hybrid search combining semantic (embedding) and BM25 (keyword) search.
 
-        Uses weighted score fusion:
-        final_score = (bm25_weight * bm25_score) + ((1 - bm25_weight) * semantic_score)
+        Strategy: SEMANTIC-FIRST APPROACH
+        1. Use semantic embeddings as PRIMARY retrieval (finds semantically relevant chunks)
+        2. Use BM25 as BOOSTER (boosts chunks with exact keyword matches)
+        3. Only apply lenient filtering to remove truly irrelevant results
 
-        Relevance filtering:
-        - Requires BM25 score >= 0.95 (strong keyword match)
-        - Requires semantic score >= 0.2 (minimum semantic relevance)
-        - Both thresholds must be met to prevent keyword-only matches
+        This approach leverages the power of embeddings to understand query intent
+        while still rewarding exact keyword matches.
 
         Args:
             query: Query text
@@ -327,26 +327,49 @@ class ParentChildDocumentStore:
             bm25_weight: Weight for BM25 scores (0.0-1.0)
 
         Returns:
-            List of child chunk results sorted by fused score (empty if no docs pass thresholds)
+            List of child chunk results sorted by fused score
         """
-        logger.debug(f"Running hybrid search: BM25_weight={bm25_weight}")
+        logger.debug(f"Running semantic-first hybrid search: BM25_weight={bm25_weight}")
 
-        # Step 1: Get all child chunks for BM25
-        # (We need all chunks to build BM25 index - could cache this for performance)
-        all_chunks = self.child_collection.get(
-            where=metadata_filter if metadata_filter else None,
+        # Step 1: Get semantic search results (SEMANTIC FIRST!)
+        # Fetch more results to allow BM25 boosting to rerank them
+        semantic_results = self._semantic_search(
+            query=query,
+            top_k=min(top_k * 5, 100),  # Get 5x results for better fusion, cap at 100
+            metadata_filter=metadata_filter
+        )
+
+        if not semantic_results:
+            logger.info("No semantic results found")
+            return []
+
+        # Step 2: Get chunks for BM25 scoring
+        # Only get chunks from semantic results (much more efficient than indexing all chunks)
+        chunk_ids = [r['id'] for r in semantic_results]
+
+        chunks_for_bm25 = self.child_collection.get(
+            ids=chunk_ids,
             include=["documents", "metadatas"]
         )
 
-        if not all_chunks['ids']:
-            logger.warning("No chunks found in collection")
-            return []
+        # Extract just the content text for BM25 (remove metadata prefix)
+        # Chunk format: "Document: XXX.pdf | Section: YYY\n\n[content]"
+        # We only want [content] for BM25 to avoid matching on section titles
+        bm25_texts = []
+        for doc in chunks_for_bm25['documents']:
+            # Split on double newline to separate metadata from content
+            parts = doc.split('\n\n', 1)
+            if len(parts) > 1:
+                # Use only the content part
+                bm25_texts.append(parts[1])
+            else:
+                # Fallback if format is different
+                bm25_texts.append(doc)
 
-        # Step 2: Build BM25 index (with stop word filtering)
-        tokenized_corpus = [tokenize_for_bm25(doc) for doc in all_chunks['documents']]
+        # Step 3: Build BM25 index and get scores
+        tokenized_corpus = [tokenize_for_bm25(text) for text in bm25_texts]
         bm25 = BM25Okapi(tokenized_corpus)
 
-        # Step 3: Get BM25 scores (with stop word filtering)
         tokenized_query = tokenize_for_bm25(query)
         logger.info(f"BM25 query tokens (stop words filtered): {tokenized_query}")
         bm25_scores = bm25.get_scores(tokenized_query)
@@ -357,79 +380,59 @@ class ParentChildDocumentStore:
         else:
             bm25_scores_normalized = bm25_scores
 
-        # Step 4: Get semantic search scores (fetch more for fusion)
-        semantic_results = self._semantic_search(
-            query=query,
-            top_k=min(top_k * 3, len(all_chunks['ids'])),  # Get 3x for better fusion
-            metadata_filter=metadata_filter
-        )
-
-        # Create semantic scores lookup
-        semantic_scores = {
-            result['id']: result['score']
-            for result in semantic_results
-        }
-
-        # Step 5: Fuse scores and filter out weak matches
-        # In hybrid mode, require both strong keyword AND semantic relevance
-        # This prevents documents with keyword matches but no semantic relevance
-        MIN_BM25_THRESHOLD = 0.95  # Require 95% of max BM25 score (very strict!)
-        MIN_SEMANTIC_THRESHOLD = 0.2  # Require minimum semantic relevance
+        # Step 4: Fuse semantic and BM25 scores
+        # LENIENT filtering - only filter out completely irrelevant results
+        MIN_SEMANTIC_THRESHOLD = 0.15  # Very low - trust the embeddings!
 
         fused_results = []
-        for i, chunk_id in enumerate(all_chunks['ids']):
-            # BM25 score (already normalized 0-1)
-            bm25_score = float(bm25_scores_normalized[i])
+        for i, result in enumerate(semantic_results):
+            semantic_score = result['score']
 
-            # Skip chunks with weak keyword relevance in hybrid mode
-            # With 0.95 threshold, only chunks with nearly perfect keyword matches pass
-            # This filters out documents scoring 0.937, 0.469, etc. (only common word matches)
-            if bm25_weight > 0 and bm25_score < MIN_BM25_THRESHOLD:
-                continue
-
-            # Semantic score (0 if not in semantic results)
-            semantic_score = semantic_scores.get(chunk_id, 0.0)
-
-            # Skip chunks with very low semantic relevance
-            # Even with perfect keyword match, if semantic score is near 0, document is likely irrelevant
-            # Example: "Does amentum have a dress code" matching doc that only contains "Amentum"
+            # Filter only truly irrelevant results (very low semantic similarity)
             if semantic_score < MIN_SEMANTIC_THRESHOLD:
                 logger.debug(
-                    f"Filtered out chunk {chunk_id[:8]}... - "
-                    f"low semantic relevance (BM25={bm25_score:.3f}, semantic={semantic_score:.3f})"
+                    f"Filtered out chunk {result['id'][:8]}... - "
+                    f"very low semantic relevance (semantic={semantic_score:.3f})"
                 )
                 continue
 
-            # Weighted fusion
-            fused_score = (bm25_weight * bm25_score) + ((1 - bm25_weight) * semantic_score)
+            # Get BM25 score for this chunk (0 if not found)
+            bm25_score = float(bm25_scores_normalized[i]) if i < len(bm25_scores_normalized) else 0.0
+
+            # Weighted fusion (semantic is primary, BM25 is booster)
+            fused_score = ((1 - bm25_weight) * semantic_score) + (bm25_weight * bm25_score)
 
             fused_results.append({
-                "id": chunk_id,
-                "text": all_chunks['documents'][i],
-                "metadata": all_chunks['metadatas'][i],
+                "id": result['id'],
+                "text": result['text'],
+                "metadata": result['metadata'],
                 "score": fused_score,
-                "bm25_score": bm25_score,
                 "semantic_score": semantic_score,
-                "retrieval_method": "hybrid"
+                "bm25_score": bm25_score,
+                "retrieval_method": "hybrid_semantic_first"
             })
 
-        # Step 6: Sort by fused score and return top_k
+        # Step 5: Sort by fused score and return top_k
         fused_results.sort(key=lambda x: x['score'], reverse=True)
         top_results = fused_results[:top_k]
 
         if not top_results:
-            logger.info("Hybrid search: no documents passed relevance thresholds")
+            logger.info("Hybrid search: no documents passed relevance threshold")
             return []
 
         logger.info(
-            f"Hybrid search: top result BM25={top_results[0]['bm25_score']:.3f}, "
-            f"semantic={top_results[0]['semantic_score']:.3f}, "
+            f"Hybrid search: top result semantic={top_results[0]['semantic_score']:.3f}, "
+            f"BM25={top_results[0]['bm25_score']:.3f}, "
             f"fused={top_results[0]['score']:.3f}"
         )
 
-        # Debug: Log BM25 scores of top 5 results to diagnose filtering
-        top5_bm25 = [r['bm25_score'] for r in top_results[:5]]
-        logger.info(f"Top 5 BM25 scores: {top5_bm25}")
+        # Debug: Log top 5 semantic and BM25 scores
+        logger.info(
+            f"Top 5 semantic scores: {[f'{r[\"semantic_score\"]:.3f}' for r in top_results[:5]]}"
+        )
+        logger.info(
+            f"Top 5 BM25 scores: {[f'{r[\"bm25_score\"]:.3f}' for r in top_results[:5]]}"
+        )
 
         return top_results
 
