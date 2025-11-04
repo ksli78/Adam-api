@@ -3,6 +3,22 @@ numpy==1.26.4
 faiss-cpu==1.8.0  # wheels built against numpy<2
 # --- end pins ---
 
+# PyTorch with CUDA support (for GPU acceleration)
+# For GPU: Install from PyTorch repository with CUDA support
+# For CPU only: pip will install CPU version automatically
+# Uncomment ONE of the following based on your setup:
+#
+# Option 1: GPU with CUDA 11.8 (most compatible)
+# --extra-index-url https://download.pytorch.org/whl/cu118
+# torch==2.1.0+cu118
+#
+# Option 2: GPU with CUDA 12.1 (newer GPUs)
+# --extra-index-url https://download.pytorch.org/whl/cu121
+# torch==2.1.0+cu121
+#
+# Option 3: CPU only (default, no GPU acceleration)
+torch>=2.1.0
+
 # ADAM RAG dependencies
 #
 # This requirements file lists the third‑party Python packages needed to
