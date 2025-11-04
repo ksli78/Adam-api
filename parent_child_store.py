@@ -14,7 +14,6 @@ Retrieval strategy:
 """
 
 import logging
-import os
 import uuid
 from typing import List, Dict, Any, Tuple, Optional
 from pathlib import Path
@@ -27,24 +26,6 @@ from rank_bm25 import BM25Okapi
 from semantic_chunker import Chunk
 
 logger = logging.getLogger(__name__)
-
-# Default data directory (platform-specific)
-DEFAULT_CHROMA_DIR = "D:/data/airgapped_rag/chromadb_advanced" if os.name == 'nt' else "/data/airgapped_rag/chromadb_advanced"
-
-# Import feedback store (lazy import to avoid circular dependencies)
-_feedback_store = None
-
-def get_feedback_store_lazy():
-    """Lazy load feedback store to avoid circular imports."""
-    global _feedback_store
-    if _feedback_store is None:
-        try:
-            from feedback_store import get_feedback_store
-            _feedback_store = get_feedback_store()
-        except Exception as e:
-            logger.warning(f"Could not load feedback store: {e}")
-            _feedback_store = None
-    return _feedback_store
 
 # English stop words for BM25 filtering
 STOP_WORDS = {
@@ -59,16 +40,13 @@ STOP_WORDS = {
 
 def tokenize_for_bm25(text: str) -> List[str]:
     """
-    Tokenize text for BM25 search with stop word filtering and punctuation stripping.
+    Tokenize text for BM25 search with stop word filtering.
 
-    Removes common English stop words and strips punctuation to improve keyword matching accuracy.
+    Removes common English stop words to improve keyword matching accuracy.
     """
-    import string
     tokens = text.lower().split()
-    # Strip punctuation from each token
-    tokens = [token.strip(string.punctuation) for token in tokens]
-    # Filter out stop words, empty tokens, and keep only meaningful terms
-    return [token for token in tokens if token and token not in STOP_WORDS and len(token) > 1]
+    # Filter out stop words and keep only meaningful terms
+    return [token for token in tokens if token not in STOP_WORDS and len(token) > 1]
 
 
 class ParentChildDocumentStore:
@@ -80,7 +58,7 @@ class ParentChildDocumentStore:
 
     def __init__(
         self,
-        persist_directory: str = None,
+        persist_directory: str = "/data/airgapped_rag/chromadb_advanced",
         embedding_model: str = "all-MiniLM-L6-v2",
         child_collection_name: str = "child_chunks",
         parent_collection_name: str = "parent_chunks"
@@ -89,19 +67,13 @@ class ParentChildDocumentStore:
         Initialize the parent-child document store.
 
         Args:
-            persist_directory: Directory for ChromaDB persistence (defaults to platform-specific path)
+            persist_directory: Directory for ChromaDB persistence
             embedding_model: Sentence-transformers model for embeddings
             child_collection_name: Name for child chunks collection
             parent_collection_name: Name for parent chunks collection
         """
-        # Use default directory if not specified
-        if persist_directory is None:
-            persist_directory = DEFAULT_CHROMA_DIR
-
         self.persist_directory = Path(persist_directory)
         self.persist_directory.mkdir(parents=True, exist_ok=True)
-
-        logger.info(f"ParentChildDocumentStore using ChromaDB at: {self.persist_directory}")
 
         self.child_collection_name = child_collection_name
         self.parent_collection_name = parent_collection_name
@@ -233,8 +205,7 @@ class ParentChildDocumentStore:
         parent_limit: int = 3,
         metadata_filter: Dict[str, Any] = None,
         use_hybrid: bool = True,
-        bm25_weight: float = 0.5,
-        use_feedback_weighting: bool = True
+        bm25_weight: float = 0.5
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Retrieve child chunks and optionally expand to parent chunks.
@@ -242,10 +213,9 @@ class ParentChildDocumentStore:
         Strategy:
         1. Run hybrid search (BM25 + Semantic) on child chunks
         2. Fuse scores with weighted combination
-        3. Apply feedback weighting to boost/demote chunks based on user feedback
-        4. If expand_to_parents, get corresponding parent chunks
-        5. Deduplicate parents
-        6. Return both child and parent chunks
+        3. If expand_to_parents, get corresponding parent chunks
+        4. Deduplicate parents
+        5. Return both child and parent chunks
 
         Args:
             query: Query text
@@ -255,7 +225,6 @@ class ParentChildDocumentStore:
             metadata_filter: Optional metadata filter for search
             use_hybrid: Whether to use hybrid (BM25 + semantic) search
             bm25_weight: Weight for BM25 scores (0.0-1.0), semantic gets (1-bm25_weight)
-            use_feedback_weighting: Whether to apply feedback-based score adjustments
 
         Returns:
             Tuple of (child_results, parent_results)
@@ -267,8 +236,7 @@ class ParentChildDocumentStore:
                 query=query,
                 top_k=top_k,
                 metadata_filter=metadata_filter,
-                bm25_weight=bm25_weight,
-                use_feedback_weighting=use_feedback_weighting
+                bm25_weight=bm25_weight
             )
         else:
             # Pure semantic search (original method)
@@ -339,51 +307,69 @@ class ParentChildDocumentStore:
         query: str,
         top_k: int,
         metadata_filter: Dict[str, Any] = None,
-        bm25_weight: float = 0.5,
-        use_feedback_weighting: bool = True
+        bm25_weight: float = 0.5
     ) -> List[Dict[str, Any]]:
         """
-        Hybrid search combining BM25 (keyword) and semantic (embedding) search.
+        Hybrid search combining semantic (embedding) and BM25 (keyword) search.
 
-        Uses weighted score fusion:
-        final_score = (bm25_weight * bm25_score) + ((1 - bm25_weight) * semantic_score)
+        Strategy: SEMANTIC-FIRST APPROACH
+        1. Use semantic embeddings as PRIMARY retrieval (finds semantically relevant chunks)
+        2. Use BM25 as BOOSTER (boosts chunks with exact keyword matches)
+        3. Only apply lenient filtering to remove truly irrelevant results
 
-        Optionally applies feedback weighting:
-        feedback_adjusted_score = final_score * (1 + feedback_weight * quality_score)
-
-        Relevance filtering:
-        - Requires BM25 score >= 0.95 (strong keyword match)
-        - Requires semantic score >= 0.2 (minimum semantic relevance)
-        - Both thresholds must be met to prevent keyword-only matches
+        This approach leverages the power of embeddings to understand query intent
+        while still rewarding exact keyword matches.
 
         Args:
             query: Query text
             top_k: Number of results to return
             metadata_filter: Optional metadata filter
             bm25_weight: Weight for BM25 scores (0.0-1.0)
-            use_feedback_weighting: Apply feedback-based score adjustments
 
         Returns:
-            List of child chunk results sorted by fused score (empty if no docs pass thresholds)
+            List of child chunk results sorted by fused score
         """
-        logger.debug(f"Running hybrid search: BM25_weight={bm25_weight}")
+        logger.debug(f"Running semantic-first hybrid search: BM25_weight={bm25_weight}")
 
-        # Step 1: Get all child chunks for BM25
-        # (We need all chunks to build BM25 index - could cache this for performance)
-        all_chunks = self.child_collection.get(
-            where=metadata_filter if metadata_filter else None,
+        # Step 1: Get semantic search results (SEMANTIC FIRST!)
+        # Fetch more results to allow BM25 boosting to rerank them
+        semantic_results = self._semantic_search(
+            query=query,
+            top_k=min(top_k * 5, 100),  # Get 5x results for better fusion, cap at 100
+            metadata_filter=metadata_filter
+        )
+
+        if not semantic_results:
+            logger.info("No semantic results found")
+            return []
+
+        # Step 2: Get chunks for BM25 scoring
+        # Only get chunks from semantic results (much more efficient than indexing all chunks)
+        chunk_ids = [r['id'] for r in semantic_results]
+
+        chunks_for_bm25 = self.child_collection.get(
+            ids=chunk_ids,
             include=["documents", "metadatas"]
         )
 
-        if not all_chunks['ids']:
-            logger.warning("No chunks found in collection")
-            return []
+        # Extract just the content text for BM25 (remove metadata prefix)
+        # Chunk format: "Document: XXX.pdf | Section: YYY\n\n[content]"
+        # We only want [content] for BM25 to avoid matching on section titles
+        bm25_texts = []
+        for doc in chunks_for_bm25['documents']:
+            # Split on double newline to separate metadata from content
+            parts = doc.split('\n\n', 1)
+            if len(parts) > 1:
+                # Use only the content part
+                bm25_texts.append(parts[1])
+            else:
+                # Fallback if format is different
+                bm25_texts.append(doc)
 
-        # Step 2: Build BM25 index (with stop word filtering)
-        tokenized_corpus = [tokenize_for_bm25(doc) for doc in all_chunks['documents']]
+        # Step 3: Build BM25 index and get scores
+        tokenized_corpus = [tokenize_for_bm25(text) for text in bm25_texts]
         bm25 = BM25Okapi(tokenized_corpus)
 
-        # Step 3: Get BM25 scores (with stop word filtering)
         tokenized_query = tokenize_for_bm25(query)
         logger.info(f"BM25 query tokens (stop words filtered): {tokenized_query}")
         bm25_scores = bm25.get_scores(tokenized_query)
@@ -394,147 +380,59 @@ class ParentChildDocumentStore:
         else:
             bm25_scores_normalized = bm25_scores
 
-        # Step 4: Get semantic search scores (fetch more for fusion)
-        # With large document collections, we need to retrieve enough semantic results
-        # to ensure relevant chunks get semantic scores (not just 0.0 from being outside top-N)
-        semantic_top_k = min(max(top_k * 10, 100), len(all_chunks['ids']))  # At least 100 or 10x top_k
-        semantic_results = self._semantic_search(
-            query=query,
-            top_k=semantic_top_k,
-            metadata_filter=metadata_filter
-        )
-
-        # Create semantic scores lookup
-        semantic_scores = {
-            result['id']: result['score']
-            for result in semantic_results
-        }
-
-        # Step 5: Fuse scores and filter out weak matches
-        # In hybrid mode, require both strong keyword AND semantic relevance
-        # This prevents documents with keyword matches but no semantic relevance
-        MIN_BM25_THRESHOLD = 0.80  # Lowered to 80% to capture more relevant chunks (e.g. 0.848, 0.820) from multiple PTO policy sections
-        MIN_SEMANTIC_THRESHOLD = 0.2  # Require minimum semantic relevance
+        # Step 4: Fuse semantic and BM25 scores
+        # LENIENT filtering - only filter out completely irrelevant results
+        MIN_SEMANTIC_THRESHOLD = 0.15  # Very low - trust the embeddings!
 
         fused_results = []
+        for i, result in enumerate(semantic_results):
+            semantic_score = result['score']
 
-        # Log top BM25 scores for debugging
-        if len(bm25_scores_normalized) > 0:
-            top_bm25_indices = sorted(range(len(bm25_scores_normalized)),
-                                     key=lambda i: bm25_scores_normalized[i],
-                                     reverse=True)[:5]
-            logger.info(f"Top 5 BM25 scores: {[f'{bm25_scores_normalized[i]:.3f}' for i in top_bm25_indices]}")
-
-        # Track chunks that pass BM25 threshold
-        bm25_passed = []
-
-        for i, chunk_id in enumerate(all_chunks['ids']):
-            # BM25 score (already normalized 0-1)
-            bm25_score = float(bm25_scores_normalized[i])
-
-            # Skip chunks with weak keyword relevance in hybrid mode
-            # With 0.95 threshold, only chunks with nearly perfect keyword matches pass
-            # This filters out documents scoring 0.937, 0.469, etc. (only common word matches)
-            if bm25_weight > 0 and bm25_score < MIN_BM25_THRESHOLD:
-                continue
-
-            # Semantic score (0 if not in semantic results)
-            semantic_score = semantic_scores.get(chunk_id, 0.0)
-
-            # Log all chunks that passed BM25 threshold
-            bm25_passed.append({
-                'chunk_id': chunk_id[:12],
-                'bm25': bm25_score,
-                'semantic': semantic_score,
-                'doc_title': all_chunks['metadatas'][i].get('document_title', 'unknown')[:30]
-            })
-
-        if bm25_passed:
-            logger.info(f"Chunks passing BM25 threshold (>={MIN_BM25_THRESHOLD}): {len(bm25_passed)}")
-            for chunk_info in bm25_passed[:10]:  # Show first 10
-                logger.info(f"  {chunk_info['chunk_id']}... BM25={chunk_info['bm25']:.3f} Semantic={chunk_info['semantic']:.3f} Doc={chunk_info['doc_title']}")
-
-        # Now apply semantic threshold
-        for i, chunk_id in enumerate(all_chunks['ids']):
-            bm25_score = float(bm25_scores_normalized[i])
-            if bm25_weight > 0 and bm25_score < MIN_BM25_THRESHOLD:
-                continue
-
-            semantic_score = semantic_scores.get(chunk_id, 0.0)
-
-            # Require BOTH strong keyword match AND semantic relevance
-            # This prevents keyword pollution (e.g., EN-PR-0051 with "paid time off" in keywords)
-            # By retrieving 100+ semantic results above, relevant docs get proper semantic scores
+            # Filter only truly irrelevant results (very low semantic similarity)
             if semantic_score < MIN_SEMANTIC_THRESHOLD:
-                logger.info(
-                    f"Filtered out chunk {chunk_id[:8]}... - "
-                    f"low semantic relevance (BM25={bm25_score:.3f}, semantic={semantic_score:.3f})"
+                logger.debug(
+                    f"Filtered out chunk {result['id'][:8]}... - "
+                    f"very low semantic relevance (semantic={semantic_score:.3f})"
                 )
                 continue
 
-            # Weighted fusion
-            fused_score = (bm25_weight * bm25_score) + ((1 - bm25_weight) * semantic_score)
+            # Get BM25 score for this chunk (0 if not found)
+            bm25_score = float(bm25_scores_normalized[i]) if i < len(bm25_scores_normalized) else 0.0
+
+            # Weighted fusion (semantic is primary, BM25 is booster)
+            fused_score = ((1 - bm25_weight) * semantic_score) + (bm25_weight * bm25_score)
 
             fused_results.append({
-                "id": chunk_id,
-                "text": all_chunks['documents'][i],
-                "metadata": all_chunks['metadatas'][i],
+                "id": result['id'],
+                "text": result['text'],
+                "metadata": result['metadata'],
                 "score": fused_score,
-                "bm25_score": bm25_score,
                 "semantic_score": semantic_score,
-                "retrieval_method": "hybrid"
+                "bm25_score": bm25_score,
+                "retrieval_method": "hybrid_semantic_first"
             })
 
-        # Step 6: Apply feedback weighting if enabled
-        if use_feedback_weighting and fused_results:
-            feedback_store = get_feedback_store_lazy()
-            if feedback_store:
-                # Get feedback scores for all chunks
-                chunk_ids = [r['id'] for r in fused_results]
-                feedback_scores = feedback_store.get_chunk_quality_scores(chunk_ids)
-
-                # Apply feedback weighting
-                # quality_score ranges from -1.0 (all bad) to +1.0 (all good)
-                # We use a moderate weight so feedback doesn't override relevance
-                FEEDBACK_WEIGHT = 0.15  # 15% adjustment based on feedback
-
-                for result in fused_results:
-                    chunk_id = result['id']
-                    quality_score = feedback_scores.get(chunk_id, 0.0)
-
-                    if quality_score != 0.0:
-                        # Adjust score: positive feedback boosts, negative demotes
-                        original_score = result['score']
-                        adjustment = FEEDBACK_WEIGHT * quality_score
-                        adjusted_score = original_score * (1 + adjustment)
-
-                        result['score'] = max(0.0, adjusted_score)  # Keep >= 0
-                        result['feedback_quality'] = quality_score
-                        result['feedback_adjustment'] = adjustment
-
-                        logger.debug(
-                            f"Chunk {chunk_id[:8]}... feedback adjusted: "
-                            f"{original_score:.3f} -> {adjusted_score:.3f} "
-                            f"(quality: {quality_score:.2f})"
-                        )
-
-        # Step 7: Sort by (possibly feedback-adjusted) score and return top_k
+        # Step 5: Sort by fused score and return top_k
         fused_results.sort(key=lambda x: x['score'], reverse=True)
         top_results = fused_results[:top_k]
 
         if not top_results:
-            logger.info("Hybrid search: no documents passed relevance thresholds")
+            logger.info("Hybrid search: no documents passed relevance threshold")
             return []
 
         logger.info(
-            f"Hybrid search: top result BM25={top_results[0]['bm25_score']:.3f}, "
-            f"semantic={top_results[0]['semantic_score']:.3f}, "
+            f"Hybrid search: top result semantic={top_results[0]['semantic_score']:.3f}, "
+            f"BM25={top_results[0]['bm25_score']:.3f}, "
             f"fused={top_results[0]['score']:.3f}"
         )
 
-        # Debug: Log BM25 scores of top 5 results to diagnose filtering
-        top5_bm25 = [r['bm25_score'] for r in top_results[:5]]
-        logger.info(f"Top 5 BM25 scores: {top5_bm25}")
+        # Debug: Log top 5 semantic and BM25 scores
+        logger.info(
+            f"Top 5 semantic scores: {[f'{r[\"semantic_score\"]:.3f}' for r in top_results[:5]]}"
+        )
+        logger.info(
+            f"Top 5 BM25 scores: {[f'{r[\"bm25_score\"]:.3f}' for r in top_results[:5]]}"
+        )
 
         return top_results
 
@@ -553,24 +451,21 @@ class ParentChildDocumentStore:
         Returns:
             List of parent chunk results (deduplicated)
         """
-        # Get unique parent IDs in order of child chunk relevance
-        # Child chunks are already sorted by score, so preserve that ordering
-        parent_ids_ordered = []
-        seen_parents = set()
+        # Get unique parent IDs
+        parent_ids = set()
         for child in child_chunks:
             parent_id = child['metadata'].get('parent_chunk_id')
-            if parent_id and parent_id not in seen_parents:
-                parent_ids_ordered.append(parent_id)
-                seen_parents.add(parent_id)
+            if parent_id:
+                parent_ids.add(parent_id)
 
-        if not parent_ids_ordered:
+        if not parent_ids:
             logger.warning("No parent IDs found in child chunks")
             return []
 
-        logger.debug(f"Found {len(parent_ids_ordered)} unique parent chunks from {len(child_chunks)} child chunks")
+        logger.debug(f"Expanding to {len(parent_ids)} unique parent chunks")
 
-        # Retrieve parents from collection (limit to top N by relevance)
-        parent_ids_list = parent_ids_ordered[:parent_limit]  # Take most relevant parents
+        # Retrieve parents from collection
+        parent_ids_list = list(parent_ids)[:parent_limit]  # Limit number of parents
 
         try:
             parent_results = self.parent_collection.get(
@@ -581,20 +476,14 @@ class ParentChildDocumentStore:
             # Format parent results
             parents = []
             for i in range(len(parent_results['ids'])):
-                parent_metadata = parent_results['metadatas'][i]
                 parents.append({
                     "id": parent_results['ids'][i],
                     "text": parent_results['documents'][i],
-                    "metadata": parent_metadata,
+                    "metadata": parent_results['metadatas'][i],
                     "score": 1.0  # Parents don't have relevance scores initially
                 })
 
-                # Log which sections are being sent to LLM
-                section_title = parent_metadata.get('section_title', 'Unknown')
-                doc_title = parent_metadata.get('document_title', 'Unknown')
-                logger.info(f"  Parent {i+1}: {doc_title} - Section: {section_title[:50]}")
-
-            logger.info(f"Expanded to {len(parents)} parent chunks for LLM context")
+            logger.info(f"Expanded to {len(parents)} parent chunks")
             return parents
 
         except Exception as e:
