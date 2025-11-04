@@ -16,6 +16,7 @@ Retrieval strategy:
 import logging
 import re
 import uuid
+import json
 from typing import List, Dict, Any, Tuple, Optional
 from pathlib import Path
 import chromadb
@@ -28,6 +29,9 @@ from semantic_chunker import Chunk
 
 logger = logging.getLogger(__name__)
 
+# Path to acronym expansions config file
+ACRONYMS_CONFIG_PATH = Path(__file__).parent / "config" / "acronyms.json"
+
 # English stop words for BM25 filtering
 STOP_WORDS = {
     'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from',
@@ -38,27 +42,83 @@ STOP_WORDS = {
     'their', 'our', 'his', 'her'
 }
 
-# Common workplace/HR acronyms and their expansions
-# This helps the embedding model understand domain-specific terminology
-ACRONYM_EXPANSIONS = {
+# Default acronym expansions (used if config file doesn't exist)
+DEFAULT_ACRONYM_EXPANSIONS = {
     'pto': 'Paid Time Off (PTO)',
     'hr': 'Human Resources (HR)',
     'it': 'Information Technology (IT)',
     'cui': 'Controlled Unclassified Information (CUI)',
     'pii': 'Personally Identifiable Information (PII)',
-    'osha': 'Occupational Safety and Health Administration (OSHA)',
-    'eeo': 'Equal Employment Opportunity (EEO)',
-    'fmla': 'Family and Medical Leave Act (FMLA)',
-    'ada': 'Americans with Disabilities Act (ADA)',
-    'erp': 'Enterprise Resource Planning (ERP)',
-    'sop': 'Standard Operating Procedure (SOP)',
-    'kpi': 'Key Performance Indicator (KPI)',
-    'rfi': 'Request for Information (RFI)',
-    'rfp': 'Request for Proposal (RFP)',
-    'nda': 'Non-Disclosure Agreement (NDA)',
-    'msa': 'Master Service Agreement (MSA)',
-    'sow': 'Statement of Work (SOW)',
 }
+
+# Global variable to hold loaded acronyms
+_acronym_expansions = None
+
+
+def load_acronym_expansions() -> Dict[str, str]:
+    """
+    Load acronym expansions from JSON config file.
+
+    Returns:
+        Dictionary of acronym -> expansion mappings
+    """
+    global _acronym_expansions
+
+    try:
+        if ACRONYMS_CONFIG_PATH.exists():
+            with open(ACRONYMS_CONFIG_PATH, 'r') as f:
+                _acronym_expansions = json.load(f)
+            logger.info(f"Loaded {len(_acronym_expansions)} acronym expansions from {ACRONYMS_CONFIG_PATH}")
+        else:
+            logger.warning(f"Acronyms config file not found at {ACRONYMS_CONFIG_PATH}, using defaults")
+            _acronym_expansions = DEFAULT_ACRONYM_EXPANSIONS.copy()
+            # Create the config file with defaults
+            save_acronym_expansions(_acronym_expansions)
+    except Exception as e:
+        logger.error(f"Error loading acronym expansions: {e}, using defaults")
+        _acronym_expansions = DEFAULT_ACRONYM_EXPANSIONS.copy()
+
+    return _acronym_expansions
+
+
+def save_acronym_expansions(expansions: Dict[str, str]) -> None:
+    """
+    Save acronym expansions to JSON config file.
+
+    Args:
+        expansions: Dictionary of acronym -> expansion mappings
+    """
+    global _acronym_expansions
+
+    try:
+        # Ensure config directory exists
+        ACRONYMS_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+        # Save to file with pretty formatting
+        with open(ACRONYMS_CONFIG_PATH, 'w') as f:
+            json.dump(expansions, f, indent=2, sort_keys=True)
+
+        # Update global cache
+        _acronym_expansions = expansions
+        logger.info(f"Saved {len(expansions)} acronym expansions to {ACRONYMS_CONFIG_PATH}")
+    except Exception as e:
+        logger.error(f"Error saving acronym expansions: {e}")
+        raise
+
+
+def get_acronym_expansions() -> Dict[str, str]:
+    """
+    Get current acronym expansions (loads from file if not cached).
+
+    Returns:
+        Dictionary of acronym -> expansion mappings
+    """
+    global _acronym_expansions
+
+    if _acronym_expansions is None:
+        load_acronym_expansions()
+
+    return _acronym_expansions.copy()  # Return copy to prevent external modification
 
 
 def expand_query_acronyms(query: str) -> str:
@@ -79,8 +139,11 @@ def expand_query_acronyms(query: str) -> str:
     expanded_query = query
     query_lower = query.lower()
 
+    # Get current acronym expansions from config
+    acronym_expansions = get_acronym_expansions()
+
     # Check for each acronym (case-insensitive)
-    for acronym, expansion in ACRONYM_EXPANSIONS.items():
+    for acronym, expansion in acronym_expansions.items():
         # Match whole words only (not substrings)
         # Use word boundaries to avoid matching "pto" in "laptop"
         pattern = r'\b' + re.escape(acronym) + r'\b'
