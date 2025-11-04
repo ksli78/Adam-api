@@ -3,6 +3,12 @@ numpy==1.26.4
 faiss-cpu==1.8.0  # wheels built against numpy<2
 # --- end pins ---
 
+# PyTorch with CUDA 11.8 support for GPU acceleration
+--extra-index-url https://download.pytorch.org/whl/cu118
+torch==2.1.0+cu118
+torchvision==0.16.0+cu118
+torchaudio==2.1.0+cu118
+
 # ADAM RAG dependencies
 #
 # This requirements file lists the third‑party Python packages needed to
