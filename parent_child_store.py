@@ -196,6 +196,7 @@ class ParentChildDocumentStore:
 
         self.child_collection_name = child_collection_name
         self.parent_collection_name = parent_collection_name
+        self.embedding_model_name = embedding_model  # Store model name for later use
 
         # Initialize sentence-transformers for embeddings
         logger.info(f"Loading embedding model: {embedding_model}")
@@ -394,9 +395,17 @@ class ParentChildDocumentStore:
         # Expand acronyms to help semantic understanding
         expanded_query = expand_query_acronyms(query)
 
+        # For e5 models, prefix queries with "query: " for best performance
+        # https://huggingface.co/intfloat/e5-large-v2
+        if "e5" in self.embedding_model_name.lower():
+            query_text = f"query: {expanded_query}"
+            logger.debug(f"Using e5 query prefix: {query_text}")
+        else:
+            query_text = expanded_query
+
         # Generate query embedding (using expanded query for better semantic match)
         query_embedding = self.embedding_model.encode(
-            expanded_query,
+            query_text,
             convert_to_numpy=True
         ).tolist()
 
