@@ -14,6 +14,7 @@ Retrieval strategy:
 """
 
 import logging
+import re
 import uuid
 from typing import List, Dict, Any, Tuple, Optional
 from pathlib import Path
@@ -36,6 +37,61 @@ STOP_WORDS = {
     'do', 'does', 'did', 'have', 'had', 'been', 'being', 'my', 'your',
     'their', 'our', 'his', 'her'
 }
+
+# Common workplace/HR acronyms and their expansions
+# This helps the embedding model understand domain-specific terminology
+ACRONYM_EXPANSIONS = {
+    'pto': 'Paid Time Off (PTO)',
+    'hr': 'Human Resources (HR)',
+    'it': 'Information Technology (IT)',
+    'cui': 'Controlled Unclassified Information (CUI)',
+    'pii': 'Personally Identifiable Information (PII)',
+    'osha': 'Occupational Safety and Health Administration (OSHA)',
+    'eeo': 'Equal Employment Opportunity (EEO)',
+    'fmla': 'Family and Medical Leave Act (FMLA)',
+    'ada': 'Americans with Disabilities Act (ADA)',
+    'erp': 'Enterprise Resource Planning (ERP)',
+    'sop': 'Standard Operating Procedure (SOP)',
+    'kpi': 'Key Performance Indicator (KPI)',
+    'rfi': 'Request for Information (RFI)',
+    'rfp': 'Request for Proposal (RFP)',
+    'nda': 'Non-Disclosure Agreement (NDA)',
+    'msa': 'Master Service Agreement (MSA)',
+    'sow': 'Statement of Work (SOW)',
+}
+
+
+def expand_query_acronyms(query: str) -> str:
+    """
+    Expand common acronyms in queries to help semantic search.
+
+    Example: "What is the PTO policy?" -> "What is the Paid Time Off (PTO) policy?"
+
+    This helps the embedding model understand domain-specific acronyms that it
+    wasn't trained on.
+
+    Args:
+        query: Original query text
+
+    Returns:
+        Query with expanded acronyms
+    """
+    expanded_query = query
+    query_lower = query.lower()
+
+    # Check for each acronym (case-insensitive)
+    for acronym, expansion in ACRONYM_EXPANSIONS.items():
+        # Match whole words only (not substrings)
+        # Use word boundaries to avoid matching "pto" in "laptop"
+        pattern = r'\b' + re.escape(acronym) + r'\b'
+
+        if re.search(pattern, query_lower, re.IGNORECASE):
+            # Replace with expansion, preserving original case for the acronym part
+            expanded_query = re.sub(pattern, expansion, expanded_query, flags=re.IGNORECASE)
+            logger.info(f"Expanded acronym '{acronym.upper()}' -> '{expansion}' in query")
+            break  # Only expand first matched acronym to avoid over-expansion
+
+    return expanded_query
 
 
 def tokenize_for_bm25(text: str) -> List[str]:
@@ -272,9 +328,12 @@ class ParentChildDocumentStore:
         Returns:
             List of child chunk results
         """
-        # Generate query embedding
+        # Expand acronyms to help semantic understanding
+        expanded_query = expand_query_acronyms(query)
+
+        # Generate query embedding (using expanded query for better semantic match)
         query_embedding = self.embedding_model.encode(
-            query,
+            expanded_query,
             convert_to_numpy=True
         ).tolist()
 
