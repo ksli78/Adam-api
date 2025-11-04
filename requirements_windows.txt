@@ -1,0 +1,66 @@
+# Windows-optimized requirements file
+# Install in this order to avoid dependency resolver hangs
+#
+# INSTALLATION INSTRUCTIONS:
+# Option 1: Use the install script
+#   install_windows.bat  (Command Prompt)
+#   install_windows.ps1  (PowerShell)
+#
+# Option 2: Manual install with legacy resolver
+#   pip install --upgrade pip
+#   pip install --use-deprecated=legacy-resolver -r requirements_windows.txt
+#
+# Option 3: Install in batches
+#   See install_windows.bat for the recommended batch order
+
+# === Foundation packages (install first) ===
+numpy==1.26.4
+faiss-cpu==1.8.0
+
+# === PyTorch with CUDA 11.8 ===
+--extra-index-url https://download.pytorch.org/whl/cu118
+torch==2.1.0+cu118
+torchvision==0.16.0+cu118
+torchaudio==2.1.0+cu118
+
+# === Core ML packages ===
+transformers==4.48.1
+tokenizers
+sentence-transformers==3.2.0
+huggingface_hub==0.25.2
+safetensors==0.4.5
+accelerate==0.34.2
+
+# === Web framework ===
+pydantic
+fastapi==0.110.1
+uvicorn[standard]==0.27.1
+python-multipart
+
+# === RAG and Vector DB ===
+chromadb>=0.4.0
+ollama>=0.1.0
+
+# === Document processing ===
+docling>=2.8,<3
+pypdf>=3.0.0
+PyMuPDF>=1.23.0
+
+# === Retrieval helpers ===
+rank_bm25==0.2.2
+pyspellchecker>=0.7.0
+# rapidfuzz==3.6.0  # COMMENTED OUT - often hangs on Windows, install separately if needed
+
+# === Text processing ===
+nltk>=3.8.1
+regex>=2023.0.0
+pyyaml>=6.0
+scikit-learn==1.5.0
+
+# === SQL Database connectivity ===
+pyodbc>=4.0.39
+
+# === Optional - Haystack (can skip if not using) ===
+# haystack-ai>=2.0.0
+# chroma-haystack>=0.18.0
+# semantic-text-splitter>=0.13.0
