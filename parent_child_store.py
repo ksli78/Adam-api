@@ -510,44 +510,62 @@ class ParentChildDocumentStore:
         """
         Expand child chunks to their parent chunks.
 
+        Preserves the ranking order from child chunks - the parent of the
+        highest-ranked child is returned first.
+
         Args:
-            child_chunks: List of child chunk results
+            child_chunks: List of child chunk results (sorted by relevance)
             parent_limit: Maximum number of unique parents to return
 
         Returns:
-            List of parent chunk results (deduplicated)
+            List of parent chunk results (deduplicated, rank-ordered)
         """
-        # Get unique parent IDs
-        parent_ids = set()
+        # Get unique parent IDs IN ORDER of child chunk ranking
+        # Use a list + seen set to preserve order while deduplicating
+        parent_ids_ordered = []
+        seen_parent_ids = set()
+
         for child in child_chunks:
             parent_id = child['metadata'].get('parent_chunk_id')
-            if parent_id:
-                parent_ids.add(parent_id)
+            if parent_id and parent_id not in seen_parent_ids:
+                parent_ids_ordered.append(parent_id)
+                seen_parent_ids.add(parent_id)
 
-        if not parent_ids:
+                # Stop when we have enough parents
+                if len(parent_ids_ordered) >= parent_limit:
+                    break
+
+        if not parent_ids_ordered:
             logger.warning("No parent IDs found in child chunks")
             return []
 
-        logger.debug(f"Expanding to {len(parent_ids)} unique parent chunks")
+        logger.debug(f"Expanding to {len(parent_ids_ordered)} unique parent chunks (rank-ordered)")
 
         # Retrieve parents from collection
-        parent_ids_list = list(parent_ids)[:parent_limit]  # Limit number of parents
-
         try:
             parent_results = self.parent_collection.get(
-                ids=parent_ids_list,
+                ids=parent_ids_ordered,
                 include=["documents", "metadatas"]
             )
 
-            # Format parent results
+            # Format parent results, preserving order
             parents = []
-            for i in range(len(parent_results['ids'])):
-                parents.append({
+            # parent_results['ids'] may be in different order than requested
+            # Create a lookup dict and reorder based on our original order
+            parent_lookup = {
+                parent_results['ids'][i]: {
                     "id": parent_results['ids'][i],
                     "text": parent_results['documents'][i],
                     "metadata": parent_results['metadatas'][i],
-                    "score": 1.0  # Parents don't have relevance scores initially
-                })
+                    "score": 1.0
+                }
+                for i in range(len(parent_results['ids']))
+            }
+
+            # Reorder according to our parent_ids_ordered
+            for parent_id in parent_ids_ordered:
+                if parent_id in parent_lookup:
+                    parents.append(parent_lookup[parent_id])
 
             logger.info(f"Expanded to {len(parents)} parent chunks")
 
