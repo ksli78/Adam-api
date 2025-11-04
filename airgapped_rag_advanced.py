@@ -27,6 +27,7 @@ from document_cleaner import get_document_cleaner
 from semantic_chunker import get_semantic_chunker, DocumentSection
 from metadata_extractor import get_metadata_extractor
 from parent_child_store import get_parent_child_store
+from sql_routes import sql_router
 
 # Ollama for answer generation
 import ollama
@@ -62,6 +63,9 @@ app = FastAPI(
     description="Production RAG with semantic chunking, metadata extraction, and parent-child retrieval",
     version="2.0.0"
 )
+
+# Include SQL query routes
+app.include_router(sql_router)
 
 
 class AdvancedRAGPipeline:
