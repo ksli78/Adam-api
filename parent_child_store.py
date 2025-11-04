@@ -24,6 +24,7 @@ from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 import numpy as np
 from rank_bm25 import BM25Okapi
+import torch
 
 from semantic_chunker import Chunk
 
@@ -198,9 +199,15 @@ class ParentChildDocumentStore:
         self.parent_collection_name = parent_collection_name
         self.embedding_model_name = embedding_model  # Store model name for later use
 
+        # Detect GPU availability
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info(f"Using device: {device}")
+        if device == "cuda":
+            logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
+
         # Initialize sentence-transformers for embeddings
         logger.info(f"Loading embedding model: {embedding_model}")
-        self.embedding_model = SentenceTransformer(embedding_model)
+        self.embedding_model = SentenceTransformer(embedding_model, device=device)
         self.embedding_dim = self.embedding_model.get_sentence_embedding_dimension()
         logger.info(f"Embedding dimension: {self.embedding_dim}")
 
