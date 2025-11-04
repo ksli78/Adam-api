@@ -365,26 +365,22 @@ class AdvancedRAGPipeline:
     ) -> str:
         """Generate answer using Ollama LLM."""
 
-        prompt = f"""You are a friendly, helpful assistant that answers questions using information from company documents.
+        prompt = f"""Answer the following question using ONLY the information from the documents provided below.
 
-QUESTION: {question}
+QUESTION:
+{question}
 
-AVAILABLE DOCUMENTS:
+DOCUMENTS:
 {context}
 
 INSTRUCTIONS:
-1. Answer the question naturally and conversationally - no need for phrases like "Based on the provided documents" or "According to Document X"
-2. Use ONLY information from the documents above
-3. When referencing a document, use inline HTML citations in this exact format: <sub><a href="URL">FileName.pdf</a></sub>
-4. ONLY cite documents you actually use in your answer - don't mention documents you didn't reference
-5. Include specific details like section numbers, amounts, dates when relevant
-6. If the documents don't contain enough information, say so clearly
-7. Keep your answer focused and helpful
+- Provide a direct, helpful answer to the question
+- Use information ONLY from the documents above
+- Include specific details (section numbers, dates, amounts) when relevant
+- Cite sources using this format: <span><a href="URL">FileName.pdf</a></span>
+- If information is missing, clearly state what cannot be answered
 
-EXAMPLE of inline citation:
-"PTO is a paid time off program<sub><a href="https://example.com/EN-PO-0301.pdf">EN-PO-0301.pdf</a></sub> that varies based on years of service."
-
-ANSWER:"""
+Now provide your answer:"""
 
         logger.debug("Calling Ollama to generate answer...")
 
@@ -417,7 +413,7 @@ class QueryRequest(BaseModel):
     prompt: str
     top_k: int = 10
     parent_limit: int = 5  # Increased from 3 to get more context sections
-    temperature: float = 0.1  # Lower temperature for more consistent, deterministic responses
+    temperature: float = 0.3  # Increased from 0.1 - can help with model stability
     metadata_filter: Optional[Dict[str, Any]] = None
     use_hybrid: bool = True  # Use hybrid search (BM25 + semantic) by default
     bm25_weight: float = 0.2  # Lowered from 0.5 - trust semantics more (80% semantic, 20% BM25)
