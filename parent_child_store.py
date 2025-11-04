@@ -178,7 +178,7 @@ class ParentChildDocumentStore:
     def __init__(
         self,
         persist_directory: str = "/data/airgapped_rag/chromadb_advanced",
-        embedding_model: str = "all-MiniLM-L6-v2",
+        embedding_model: str = "all-mpnet-base-v2",  # Upgraded from all-MiniLM-L6-v2 (768 dims vs 384)
         child_collection_name: str = "child_chunks",
         parent_collection_name: str = "parent_chunks"
     ):
