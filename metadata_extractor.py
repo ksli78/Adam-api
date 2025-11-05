@@ -193,10 +193,10 @@ Extract the following information and return ONLY a valid JSON object with these
   "org_units": ["team1", "group1", ...],  // Specific organizational units
   "entities": ["PTO", "benefits", ...],  // Key entities, concepts, or terms
   "answerable_questions": [
-    "What questions can this document answer?",
-    "Another question this document addresses",
+    "How do I request vacation time?",
+    "What are the PTO accrual rates for full-time employees?",
     ...
-  ],  // 5-10 natural language questions this document can answer
+  ],  // 8-15 natural language questions this document can answer
   "language": "en",  // Document language code
   "confidence": 0.95  // Your confidence in this analysis (0.0-1.0)
 }}
@@ -207,8 +207,50 @@ Extract the following information and return ONLY a valid JSON object with these
 - Use lowercase for consistency (except acronyms)
 - Focus on substantive topics, not formatting details
 - For document_type, choose the most appropriate category
-- For answerable_questions, generate 5-10 natural language questions that a user might ask that this document can answer. Be specific and diverse in question types.
 - Confidence should reflect how clear and complete the document is
+
+**CRITICAL: Answerable Questions Guidelines**
+
+Generate 8-15 questions that a user WHO DOESN'T KNOW THIS DOCUMENT EXISTS would naturally ask.
+
+Think about what problems or information needs this document solves, then write questions from that perspective.
+
+**Question Types to Include:**
+- ACTION questions: "How do I [do something]?", "What are the steps to [accomplish task]?"
+- ELIGIBILITY questions: "Who is eligible for [benefit/program]?", "Can I [do something]?"
+- REQUIREMENT questions: "What do I need to [do something]?", "What are the requirements for [process]?"
+- DEADLINE questions: "When is the deadline for [task]?", "How far in advance must I [do something]?"
+- AMOUNT/RATE questions: "How much [resource] do I get?", "What is the rate for [item]?"
+- APPROVAL questions: "Who approves [request]?", "What is the approval process for [task]?"
+- CONSEQUENCE questions: "What happens if I [do/don't do something]?"
+- LOCATION questions: "Where do I submit [form/request]?", "Where can I find [resource]?"
+
+**AVOID These Bad Question Patterns:**
+❌ "What is this document about?" - Too meta, requires knowing the document exists
+❌ "What does this procedure cover?" - Too generic
+❌ "What policy number is this?" - Meta-information, not user need
+❌ "What is the purpose of this guideline?" - Meta-question
+❌ Any question containing "this document", "this procedure", "this policy", "this form"
+
+**GOOD Examples for a PTO Policy:**
+✓ "How many vacation days do full-time employees get per year?"
+✓ "Can I carry over unused PTO to the next year?"
+✓ "How do I request time off?"
+✓ "Who approves my vacation requests?"
+✓ "How far in advance do I need to request vacation?"
+✓ "What happens if I don't use all my PTO?"
+✓ "Do part-time employees get paid time off?"
+✓ "Where do I submit my PTO request?"
+
+**GOOD Examples for a Expense Reimbursement Procedure:**
+✓ "How do I submit an expense report?"
+✓ "What expenses are eligible for reimbursement?"
+✓ "How long does it take to get reimbursed?"
+✓ "What receipts do I need to include with my expense report?"
+✓ "What is the maximum meal reimbursement amount?"
+✓ "Can I get reimbursed for conference travel?"
+
+Be specific and diverse. Cover different aspects of the document.
 
 Return ONLY the JSON object, no other text."""
 
@@ -230,7 +272,7 @@ Return ONLY the JSON object, no other text."""
                 prompt=prompt,
                 options={
                     "temperature": self.temperature,
-                    "num_predict": 500,  # Max tokens to generate
+                    "num_predict": 800,  # Increased for more questions (8-15 instead of 5-10)
                 }
             )
 
@@ -257,6 +299,10 @@ Return ONLY the JSON object, no other text."""
             if json_match:
                 data = json.loads(json_match)
 
+                # Get and filter answerable questions
+                raw_questions = data.get("answerable_questions", [])
+                filtered_questions = self._filter_questions(raw_questions)
+
                 return DocumentMetadata(
                     document_type=data.get("document_type", "unknown"),
                     summary=data.get("summary", ""),
@@ -265,7 +311,7 @@ Return ONLY the JSON object, no other text."""
                     departments=data.get("departments", []),
                     org_units=data.get("org_units", []),
                     entities=data.get("entities", []),
-                    answerable_questions=data.get("answerable_questions", []),
+                    answerable_questions=filtered_questions,
                     language=data.get("language", "en"),
                     confidence=float(data.get("confidence", 0.8)),
                     raw_response=response
@@ -280,6 +326,71 @@ Return ONLY the JSON object, no other text."""
         except Exception as e:
             logger.error(f"Error parsing response: {e}")
             return DocumentMetadata(raw_response=response)
+
+    def _filter_questions(self, questions: List[str]) -> List[str]:
+        """
+        Filter out low-quality questions using pattern matching.
+
+        Removes:
+        - Meta-questions about the document itself
+        - Questions that are too generic or vague
+        - Questions that assume knowledge of the document
+
+        Args:
+            questions: List of raw questions from LLM
+
+        Returns:
+            Filtered list of high-quality questions
+        """
+        import re
+
+        if not questions:
+            return []
+
+        filtered = []
+        removed_count = 0
+
+        # Bad patterns to filter out
+        bad_patterns = [
+            r'\bthis\s+(document|procedure|policy|form|guideline|manual|report)\b',
+            r'\bwhat\s+is\s+this\b',
+            r'\bwhat\s+does\s+this\b',
+            r'\bwhat\s+(document|procedure|policy)\s+number\b',
+            r'\bpurpose\s+of\s+this\b',
+            r'\babout\s+this\s+(document|procedure|policy)\b',
+            r'\bwhat\s+(is|are)\s+covered\b',
+            r'\bwhat\s+(topics|subjects)\s+(does\s+this|are)\b',
+        ]
+
+        # Combine into single regex for efficiency
+        bad_pattern = re.compile('|'.join(bad_patterns), re.IGNORECASE)
+
+        for question in questions:
+            question = question.strip()
+
+            # Skip empty or too short questions
+            if not question or len(question) < 10:
+                removed_count += 1
+                continue
+
+            # Skip if matches bad patterns
+            if bad_pattern.search(question):
+                logger.debug(f"Filtered out meta-question: {question}")
+                removed_count += 1
+                continue
+
+            # Skip questions that are just fragments
+            if not question.endswith('?'):
+                removed_count += 1
+                continue
+
+            # Keep good questions
+            filtered.append(question)
+
+        if removed_count > 0:
+            logger.info(f"Filtered out {removed_count} low-quality questions, kept {len(filtered)}")
+
+        return filtered
 
     def _extract_json(self, text: str) -> Optional[str]:
         """Extract JSON object from text (in case LLM added extra text)."""
