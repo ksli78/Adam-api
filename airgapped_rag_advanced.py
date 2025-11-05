@@ -19,6 +19,10 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
+# Fix for Windows symlink permission issue with Hugging Face Hub
+# Must be set before importing any HF-dependent libraries (like docling)
+os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
+
 # Docling for PDF extraction
 from docling.document_converter import DocumentConverter
 
