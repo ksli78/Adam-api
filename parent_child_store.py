@@ -724,6 +724,115 @@ class ParentChildDocumentStore:
 
         return list(documents.values())
 
+    def get_all_documents_with_metadata(self) -> List[Dict[str, Any]]:
+        """
+        Get all unique documents with their full metadata including answerable_questions.
+
+        This is used for LLM-based document selection where we need to know
+        what questions each document can answer.
+
+        Returns:
+            List of documents with metadata
+        """
+        # Get all parent chunks
+        parent_results = self.parent_collection.get(
+            include=["metadatas"]
+        )
+
+        # Group by document ID and collect metadata
+        documents = {}
+        for metadata in parent_results['metadatas']:
+            doc_id = metadata.get('document_id')
+            if doc_id and doc_id not in documents:
+                # Extract answerable_questions (stored as " || " separated string)
+                answerable_questions_str = metadata.get('answerable_questions', '')
+                answerable_questions = (
+                    [q.strip() for q in answerable_questions_str.split('||') if q.strip()]
+                    if answerable_questions_str else []
+                )
+
+                documents[doc_id] = {
+                    "document_id": doc_id,
+                    "document_title": metadata.get('document_title', 'Unknown'),
+                    "source_url": metadata.get('source_url', ''),
+                    "document_type": metadata.get('document_type', 'unknown'),
+                    "summary": metadata.get('summary', ''),
+                    "primary_topics": metadata.get('primary_topics', ''),
+                    "keywords": metadata.get('keywords', ''),
+                    "departments": metadata.get('departments', ''),
+                    "answerable_questions": answerable_questions
+                }
+
+        return list(documents.values())
+
+    def get_full_document_text(self, document_id: str) -> Optional[str]:
+        """
+        Get the full text of a document by combining all its parent chunks.
+
+        Parent chunks are ordered by section number to maintain document structure.
+
+        Args:
+            document_id: The document ID
+
+        Returns:
+            Full document text or None if document not found
+        """
+        logger.info(f"Fetching full document text for: {document_id}")
+
+        # Get all parent chunks for this document
+        parent_results = self.parent_collection.get(
+            where={"document_id": document_id},
+            include=["documents", "metadatas"]
+        )
+
+        if not parent_results['ids']:
+            logger.warning(f"No parent chunks found for document: {document_id}")
+            return None
+
+        # Sort by section number to maintain order
+        chunks_with_metadata = list(zip(
+            parent_results['documents'],
+            parent_results['metadatas']
+        ))
+
+        # Sort by section number (extract numeric part if possible)
+        def get_section_sort_key(chunk_meta):
+            section_num = chunk_meta[1].get('section_number', '')
+            # Try to extract number for sorting (e.g., "1.2.3" -> [1, 2, 3])
+            try:
+                parts = [int(p) for p in section_num.split('.') if p.isdigit()]
+                return parts if parts else [float('inf')]
+            except:
+                return [float('inf')]
+
+        chunks_with_metadata.sort(key=get_section_sort_key)
+
+        # Combine all parent chunk texts
+        full_text_parts = []
+        for text, metadata in chunks_with_metadata:
+            section_title = metadata.get('section_title', '')
+            section_number = metadata.get('section_number', '')
+
+            # Add section header
+            if section_number and section_title:
+                full_text_parts.append(f"\n\n## {section_number} {section_title}\n\n")
+            elif section_title:
+                full_text_parts.append(f"\n\n## {section_title}\n\n")
+
+            # Add the content (remove the metadata prefix from stored text)
+            # Stored format: "Document: XXX | Section: YYY\n\n[content]"
+            content = text.split('\n\n', 1)[-1] if '\n\n' in text else text
+            full_text_parts.append(content)
+
+        full_text = "".join(full_text_parts).strip()
+
+        logger.info(
+            f"Retrieved full document text: {len(full_text)} chars, "
+            f"{len(chunks_with_metadata)} sections"
+        )
+
+        return full_text
+
     def get_statistics(self) -> Dict[str, Any]:
         """Get store statistics."""
         return {
