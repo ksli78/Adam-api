@@ -5,7 +5,7 @@ numpy==1.26.4
 
 # PyTorch with CUDA 11.8 support
 --extra-index-url https://download.pytorch.org/whl/cu118
-torch==2.2.2+cu118  # or newer 2.3/2.5 cu118 as long as tests pass
+torch==2.5.1+cu118  # Required for transformers 4.48+ (torch.compiler.is_compiling support)
 
 # ADAM RAG Core Dependencies
 fastapi==0.110.1
