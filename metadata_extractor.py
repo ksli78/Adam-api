@@ -40,6 +40,9 @@ class DocumentMetadata:
     # Key entities
     entities: List[str] = field(default_factory=list)  # PTO, benefits, salary, equipment, etc.
 
+    # Answerable questions (for LLM-based document selection)
+    answerable_questions: List[str] = field(default_factory=list)  # 5-10 questions this document can answer
+
     # Document properties
     language: str = "en"
     confidence: float = 1.0  # Confidence in extraction (0-1)
@@ -189,6 +192,11 @@ Extract the following information and return ONLY a valid JSON object with these
   "departments": ["HR", "IT", ...],  // Departments mentioned or related
   "org_units": ["team1", "group1", ...],  // Specific organizational units
   "entities": ["PTO", "benefits", ...],  // Key entities, concepts, or terms
+  "answerable_questions": [
+    "What questions can this document answer?",
+    "Another question this document addresses",
+    ...
+  ],  // 5-10 natural language questions this document can answer
   "language": "en",  // Document language code
   "confidence": 0.95  // Your confidence in this analysis (0.0-1.0)
 }}
@@ -199,6 +207,7 @@ Extract the following information and return ONLY a valid JSON object with these
 - Use lowercase for consistency (except acronyms)
 - Focus on substantive topics, not formatting details
 - For document_type, choose the most appropriate category
+- For answerable_questions, generate 5-10 natural language questions that a user might ask that this document can answer. Be specific and diverse in question types.
 - Confidence should reflect how clear and complete the document is
 
 Return ONLY the JSON object, no other text."""
@@ -256,6 +265,7 @@ Return ONLY the JSON object, no other text."""
                     departments=data.get("departments", []),
                     org_units=data.get("org_units", []),
                     entities=data.get("entities", []),
+                    answerable_questions=data.get("answerable_questions", []),
                     language=data.get("language", "en"),
                     confidence=float(data.get("confidence", 0.8)),
                     raw_response=response

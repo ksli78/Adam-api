@@ -19,6 +19,10 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
+# Fix for Windows symlink permission issue with Hugging Face Hub
+# Must be set before importing any HF-dependent libraries (like docling)
+os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
+
 # Docling for PDF extraction
 from docling.document_converter import DocumentConverter
 
@@ -208,6 +212,7 @@ class AdvancedRAGPipeline:
                 "primary_topics": ", ".join(doc_metadata.primary_topics),
                 "keywords": ", ".join(doc_metadata.keywords),
                 "departments": ", ".join(doc_metadata.departments),
+                "answerable_questions": " || ".join(doc_metadata.answerable_questions),  # Use || as separator
                 "ingestion_date": datetime.now().isoformat(),
                 "extraction_confidence": doc_metadata.confidence
             }
@@ -361,6 +366,248 @@ class AdvancedRAGPipeline:
             logger.error(f"Error processing query: {e}", exc_info=True)
             raise
 
+    async def query_with_llm_selection(
+        self,
+        question: str,
+        max_documents: int = 3,
+        temperature: float = 0.3
+    ) -> Dict[str, Any]:
+        """
+        Query the RAG system using LLM-based document selection.
+
+        New flow:
+        1. Use LLM to select relevant documents based on answerable_questions
+        2. Fetch full text of selected documents
+        3. Send full documents + question to LLM for answer generation
+        4. Return answer with document-level citations
+
+        Args:
+            question: User's question
+            max_documents: Maximum number of documents to select
+            temperature: LLM temperature for answer generation
+
+        Returns:
+            Dict with answer and citations
+        """
+        logger.info(f"Processing query with LLM document selection: {question}")
+
+        try:
+            # Step 1: Use LLM to select relevant documents
+            selected_doc_ids = await self._select_documents_with_llm(
+                user_question=question,
+                max_documents=max_documents
+            )
+
+            if not selected_doc_ids:
+                logger.warning("No documents selected by LLM")
+                return {
+                    "answer": (
+                        "I couldn't find any documents that can answer your question.<br><br>"
+                        "Here are some suggestions:<br>"
+                        "• Try rephrasing your question with different keywords<br>"
+                        "• Check the <a href='https://portal.amentumspacemissions.com/MS/Pages/MSDefaultHomePage.aspx' target='_blank'>Management System</a> "
+                        "where all policy documents are housed<br>"
+                        "• If you're looking for a specific policy, try including the policy number (e.g., EN-PO-XXXX)"
+                    ),
+                    "citations": [],
+                    "confidence": 0.0,
+                    "retrieval_stats": {
+                        "documents_selected": 0,
+                        "selection_method": "llm_based",
+                        "message": "No relevant documents found"
+                    }
+                }
+
+            # Step 2: Fetch full text for selected documents
+            logger.info(f"Fetching full text for {len(selected_doc_ids)} documents")
+            documents_with_text = []
+
+            for doc_id in selected_doc_ids:
+                full_text = self.document_store.get_full_document_text(doc_id)
+                if full_text:
+                    # Get document metadata
+                    all_docs = self.document_store.get_all_documents_with_metadata()
+                    doc_metadata = next(
+                        (d for d in all_docs if d['document_id'] == doc_id),
+                        None
+                    )
+
+                    if doc_metadata:
+                        documents_with_text.append({
+                            "document_id": doc_id,
+                            "text": full_text,
+                            "metadata": doc_metadata
+                        })
+
+            if not documents_with_text:
+                logger.error("Failed to fetch text for selected documents")
+                return {
+                    "answer": "Error: Could not retrieve document content.",
+                    "citations": [],
+                    "confidence": 0.0,
+                    "retrieval_stats": {
+                        "documents_selected": len(selected_doc_ids),
+                        "documents_retrieved": 0,
+                        "selection_method": "llm_based",
+                        "message": "Failed to fetch document text"
+                    }
+                }
+
+            # Step 3: Build context from full documents
+            context_parts = []
+            for i, doc in enumerate(documents_with_text, 1):
+                context_parts.append(
+                    f"[Document {i}]\n"
+                    f"Title: {doc['metadata']['document_title']}\n"
+                    f"URL: {doc['metadata']['source_url']}\n"
+                    f"Type: {doc['metadata']['document_type']}\n"
+                    f"Summary: {doc['metadata']['summary']}\n\n"
+                    f"Full Content:\n{doc['text']}\n"
+                )
+
+            context = "\n\n" + "="*80 + "\n\n".join(context_parts)
+
+            # Step 4: Generate answer with LLM
+            answer = await self._generate_answer(question, context, temperature)
+
+            # Replace newlines with HTML line breaks
+            answer = answer.replace('\n', '<br>')
+
+            # Step 5: Build citations (document-level, not chunk-level)
+            citations = []
+            for doc in documents_with_text:
+                citations.append({
+                    "source_url": doc['metadata']['source_url'],
+                    "document_title": doc['metadata']['document_title'],
+                    "document_type": doc['metadata']['document_type'],
+                    "summary": doc['metadata']['summary']
+                })
+
+            result = {
+                "answer": answer,
+                "citations": citations,
+                "retrieval_stats": {
+                    "documents_selected": len(selected_doc_ids),
+                    "documents_used": len(documents_with_text),
+                    "selection_method": "llm_based",
+                    "selected_document_ids": selected_doc_ids
+                }
+            }
+
+            logger.info("Query with LLM selection processed successfully")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error processing query with LLM selection: {e}", exc_info=True)
+            raise
+
+    async def _select_documents_with_llm(
+        self,
+        user_question: str,
+        max_documents: int = 5
+    ) -> List[str]:
+        """
+        Use LLM to intelligently select which documents can answer the user's question.
+
+        This method:
+        1. Gets all documents with their answerable_questions metadata
+        2. Sends the list to LLM with the user's question
+        3. LLM determines which documents are most relevant
+        4. Returns list of selected document IDs
+
+        Args:
+            user_question: The user's natural language question
+            max_documents: Maximum number of documents to select
+
+        Returns:
+            List of document IDs that can answer the question
+        """
+        logger.info(f"Using LLM to select documents for question: {user_question}")
+
+        # Get all documents with metadata
+        all_documents = self.document_store.get_all_documents_with_metadata()
+
+        if not all_documents:
+            logger.warning("No documents found in the store")
+            return []
+
+        # Build document catalog for LLM
+        doc_catalog = []
+        for i, doc in enumerate(all_documents, 1):
+            doc_info = f"""
+Document {i}:
+- ID: {doc['document_id']}
+- Title: {doc['document_title']}
+- Type: {doc['document_type']}
+- Summary: {doc['summary']}
+- Topics: {doc['primary_topics']}
+- Questions this document can answer:
+"""
+            for q in doc['answerable_questions']:
+                doc_info += f"  * {q}\n"
+
+            doc_catalog.append(doc_info)
+
+        catalog_text = "\n".join(doc_catalog)
+
+        # Build prompt for LLM
+        prompt = f"""You are a document selection expert. Your task is to identify which documents can answer a user's question.
+
+USER'S QUESTION:
+{user_question}
+
+AVAILABLE DOCUMENTS:
+{catalog_text}
+
+INSTRUCTIONS:
+1. Analyze the user's question carefully
+2. Compare it against the "Questions this document can answer" for each document
+3. Also consider the document summaries and topics
+4. Select the documents that are most likely to contain the answer
+5. Select up to {max_documents} documents, ranked by relevance
+6. Return ONLY a JSON array of document IDs, like this: ["doc-id-1", "doc-id-2", "doc-id-3"]
+
+If no documents can answer the question, return an empty array: []
+
+Your response (JSON only):"""
+
+        try:
+            response = self.ollama_client.generate(
+                model=LLM_MODEL,
+                prompt=prompt,
+                options={
+                    "temperature": 0.1,  # Low temperature for more deterministic selection
+                    "num_predict": 200
+                }
+            )
+
+            # Parse the response to extract document IDs
+            response_text = response['response'].strip()
+            logger.debug(f"LLM document selection response: {response_text}")
+
+            # Try to parse as JSON
+            import json
+            import re
+
+            # Extract JSON array from response
+            json_match = re.search(r'\[.*?\]', response_text, re.DOTALL)
+            if json_match:
+                selected_ids = json.loads(json_match.group(0))
+
+                # Validate that all IDs exist
+                valid_ids = [doc['document_id'] for doc in all_documents]
+                selected_ids = [doc_id for doc_id in selected_ids if doc_id in valid_ids]
+
+                logger.info(f"LLM selected {len(selected_ids)} documents: {selected_ids}")
+                return selected_ids
+            else:
+                logger.warning("Could not parse JSON from LLM response, falling back to empty list")
+                return []
+
+        except Exception as e:
+            logger.error(f"Error in LLM document selection: {e}", exc_info=True)
+            return []
+
     async def _generate_answer(
         self,
         question: str,
@@ -421,6 +668,8 @@ class QueryRequest(BaseModel):
     metadata_filter: Optional[Dict[str, Any]] = None
     use_hybrid: bool = True  # Use hybrid search (BM25 + semantic) by default
     bm25_weight: float = 0.2  # Lowered from 0.5 - trust semantics more (80% semantic, 20% BM25)
+    use_llm_selection: bool = False  # NEW: Use LLM-based document selection instead of hybrid search
+    max_documents: int = 3  # NEW: Max documents to select when using LLM selection
 
 
 class QueryResponse(BaseModel):
@@ -469,27 +718,41 @@ async def upload_document(
 @app.post("/query", response_model=QueryResponse)
 async def query(request: QueryRequest):
     """
-    Query the RAG system with hybrid search (BM25 + semantic).
+    Query the RAG system with two modes:
 
-    Retrieves child chunks using hybrid search, expands to parents, generates answer.
+    1. HYBRID SEARCH MODE (default, use_llm_selection=False):
+       - Retrieves child chunks using hybrid search (BM25 + semantic)
+       - Expands to parent chunks for context
+       - Generates answer from chunks
+       - Set use_hybrid=False for pure semantic search
+       - Adjust bm25_weight (0.0-1.0) to control BM25 vs semantic influence
 
-    Hybrid search combines:
-    - BM25: Keyword/lexical matching (good for exact terms)
-    - Semantic: Embedding similarity (good for concepts)
-
-    Set use_hybrid=False for pure semantic search.
-    Adjust bm25_weight (0.0-1.0) to control BM25 vs semantic influence.
+    2. LLM DOCUMENT SELECTION MODE (use_llm_selection=True):
+       - Uses LLM to select relevant documents based on answerable_questions
+       - Fetches full text of selected documents
+       - Generates answer from complete documents
+       - Set max_documents to control how many documents to select (default: 3)
     """
     try:
-        result = await rag_pipeline.query(
-            question=request.prompt,
-            top_k=request.top_k,
-            parent_limit=request.parent_limit,
-            metadata_filter=request.metadata_filter,
-            temperature=request.temperature,
-            use_hybrid=request.use_hybrid,
-            bm25_weight=request.bm25_weight
-        )
+        # Route to appropriate query method based on use_llm_selection
+        if request.use_llm_selection:
+            logger.info("Using LLM-based document selection mode")
+            result = await rag_pipeline.query_with_llm_selection(
+                question=request.prompt,
+                max_documents=request.max_documents,
+                temperature=request.temperature
+            )
+        else:
+            logger.info("Using hybrid search mode")
+            result = await rag_pipeline.query(
+                question=request.prompt,
+                top_k=request.top_k,
+                parent_limit=request.parent_limit,
+                metadata_filter=request.metadata_filter,
+                temperature=request.temperature,
+                use_hybrid=request.use_hybrid,
+                bm25_weight=request.bm25_weight
+            )
 
         return result
 
