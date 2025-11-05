@@ -763,9 +763,16 @@ async def query(request: QueryRequest):
 
 @app.get("/documents")
 async def list_documents():
-    """List all documents in the system."""
+    """
+    List all documents in the system with full metadata including answerable questions.
+
+    Returns document information including:
+    - Basic info (ID, title, URL, type)
+    - Summary and topics
+    - Answerable questions (for LLM-based document selection)
+    """
     try:
-        documents = rag_pipeline.document_store.list_documents()
+        documents = rag_pipeline.document_store.get_all_documents_with_metadata()
         return {"documents": documents, "count": len(documents)}
     except Exception as e:
         logger.error(f"Error listing documents: {e}")
@@ -780,6 +787,65 @@ async def delete_document(document_id: str):
         return result
     except Exception as e:
         logger.error(f"Error deleting document: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/documents/{document_id}/questions")
+async def update_document_questions(
+    document_id: str,
+    questions: List[str]
+):
+    """
+    Update the answerable questions for a document without re-ingesting.
+
+    This allows you to manually refine or add questions after document ingestion.
+    Useful for:
+    - Adding domain-specific questions the LLM might have missed
+    - Removing low-quality auto-generated questions
+    - Tuning questions based on user query patterns
+
+    Args:
+        document_id: The document ID to update
+        questions: New list of questions (replaces existing questions)
+
+    Example request body:
+    ```json
+    [
+        "How do I request vacation time?",
+        "What is the PTO accrual rate?",
+        "Who approves time off requests?"
+    ]
+    ```
+    """
+    try:
+        if not questions:
+            raise HTTPException(
+                status_code=400,
+                detail="Questions list cannot be empty"
+            )
+
+        # Validate questions
+        for q in questions:
+            if not isinstance(q, str) or not q.strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="All questions must be non-empty strings"
+                )
+
+        result = rag_pipeline.document_store.update_document_questions(
+            document_id=document_id,
+            answerable_questions=questions
+        )
+
+        if "error" in result:
+            raise HTTPException(status_code=404, detail=result["error"])
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating document questions: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -695,6 +695,88 @@ class ParentChildDocumentStore:
             "parent_chunks_deleted": len(parent_results['ids'])
         }
 
+    def update_document_questions(
+        self,
+        document_id: str,
+        answerable_questions: List[str]
+    ) -> Dict[str, Any]:
+        """
+        Update the answerable_questions metadata for all chunks of a document.
+
+        This allows updating the questions without re-ingesting the entire document.
+        Useful for manually refining questions or adding domain-specific queries.
+
+        Args:
+            document_id: Document ID to update
+            answerable_questions: New list of questions this document can answer
+
+        Returns:
+            Dict with update statistics
+        """
+        logger.info(f"Updating questions for document: {document_id}")
+        logger.info(f"New questions: {answerable_questions}")
+
+        # Convert questions list to string (using || as separator)
+        questions_str = " || ".join(answerable_questions)
+
+        # Get all parent chunks for this document
+        parent_results = self.parent_collection.get(
+            where={"document_id": document_id},
+            include=["metadatas"]
+        )
+
+        if not parent_results['ids']:
+            logger.warning(f"No chunks found for document: {document_id}")
+            return {
+                "document_id": document_id,
+                "parent_chunks_updated": 0,
+                "child_chunks_updated": 0,
+                "error": "Document not found"
+            }
+
+        # Update parent chunks metadata
+        updated_parent_metadatas = []
+        for metadata in parent_results['metadatas']:
+            # Create new metadata dict with updated questions
+            updated_metadata = metadata.copy()
+            updated_metadata['answerable_questions'] = questions_str
+            updated_parent_metadatas.append(updated_metadata)
+
+        # ChromaDB update requires ids and metadatas
+        self.parent_collection.update(
+            ids=parent_results['ids'],
+            metadatas=updated_parent_metadatas
+        )
+        logger.info(f"Updated {len(parent_results['ids'])} parent chunks")
+
+        # Get all child chunks for this document
+        child_results = self.child_collection.get(
+            where={"document_id": document_id},
+            include=["metadatas"]
+        )
+
+        # Update child chunks metadata
+        if child_results['ids']:
+            updated_child_metadatas = []
+            for metadata in child_results['metadatas']:
+                updated_metadata = metadata.copy()
+                updated_metadata['answerable_questions'] = questions_str
+                updated_child_metadatas.append(updated_metadata)
+
+            self.child_collection.update(
+                ids=child_results['ids'],
+                metadatas=updated_child_metadatas
+            )
+            logger.info(f"Updated {len(child_results['ids'])} child chunks")
+
+        return {
+            "document_id": document_id,
+            "parent_chunks_updated": len(parent_results['ids']),
+            "child_chunks_updated": len(child_results['ids']),
+            "questions_count": len(answerable_questions),
+            "message": "Document questions updated successfully"
+        }
+
     def list_documents(self) -> List[Dict[str, Any]]:
         """
         List all documents in the store.
