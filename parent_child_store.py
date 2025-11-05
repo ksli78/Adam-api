@@ -508,7 +508,11 @@ class ParentChildDocumentStore:
         tokenized_corpus = [tokenize_for_bm25(text) for text in bm25_texts]
         bm25 = BM25Okapi(tokenized_corpus)
 
-        tokenized_query = tokenize_for_bm25(query)
+        # Use acronym-expanded query for BM25 as well so spelled-out terms
+        # like "Paid Time Off" match documents even if the user only typed
+        # "PTO" in their question.
+        expanded_query = expand_query_acronyms(query)
+        tokenized_query = tokenize_for_bm25(expanded_query)
         logger.info(f"BM25 query tokens (stop words filtered): {tokenized_query}")
         bm25_scores = bm25.get_scores(tokenized_query)
 
