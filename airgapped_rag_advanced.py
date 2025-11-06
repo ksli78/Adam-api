@@ -59,7 +59,12 @@ CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Ollama configuration
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-LLM_MODEL = os.getenv("LLM_MODEL", "llama3:8b")
+LLM_MODEL = os.getenv("LLM_MODEL", "llama3.1:8b")  # llama3.1:8b has 128K context window vs llama3:8b's 8K
+
+# LLM Context window configuration
+# llama3.1:8b supports up to 128K tokens, but we use 32K for efficiency
+# 32K is sufficient for ~50 documents with questions (~26K tokens)
+LLM_CONTEXT_WINDOW = int(os.getenv("LLM_CONTEXT_WINDOW", "32768"))  # 32K tokens
 
 # FastAPI app
 app = FastAPI(
@@ -92,7 +97,8 @@ class AdvancedRAGPipeline:
         )
         self.metadata_extractor = get_metadata_extractor(
             model_name=LLM_MODEL,
-            ollama_host=OLLAMA_HOST
+            ollama_host=OLLAMA_HOST,
+            context_window=LLM_CONTEXT_WINDOW
         )
         self.document_store = get_parent_child_store(
             persist_directory=str(CHROMA_DIR)
@@ -649,7 +655,8 @@ Your response (JSON array of ID values only):"""
                 prompt=prompt,
                 options={
                     "temperature": 0.1,  # Low temperature for more deterministic selection
-                    "num_predict": 300  # Increased to allow for more IDs
+                    "num_predict": 300,  # Increased to allow for more IDs
+                    "num_ctx": LLM_CONTEXT_WINDOW  # Context window size (32K for llama3.1:8b)
                 }
             )
 
@@ -740,7 +747,8 @@ Now provide your answer:"""
                 prompt=prompt,
                 options={
                     "temperature": temperature,
-                    "num_predict": 500
+                    "num_predict": 500,
+                    "num_ctx": LLM_CONTEXT_WINDOW  # Context window size (32K for llama3.1:8b)
                 }
             )
 

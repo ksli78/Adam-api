@@ -65,10 +65,11 @@ class MetadataExtractor:
 
     def __init__(
         self,
-        model_name: str = "llama3:8b",
+        model_name: str = "llama3.1:8b",
         ollama_host: str = "http://localhost:11434",
         max_input_chars: int = 6000,
-        temperature: float = 0.1
+        temperature: float = 0.1,
+        context_window: int = 32768
     ):
         """
         Initialize the metadata extractor.
@@ -78,18 +79,20 @@ class MetadataExtractor:
             ollama_host: Ollama server URL
             max_input_chars: Maximum characters to send to LLM
             temperature: LLM temperature (0.0-1.0, lower = more deterministic)
+            context_window: LLM context window size in tokens
         """
         self.model_name = model_name
         self.ollama_host = ollama_host
         self.max_input_chars = max_input_chars
         self.temperature = temperature
+        self.context_window = context_window
 
         # Configure ollama client
         self.client = ollama.Client(host=ollama_host)
 
         logger.info(
             f"MetadataExtractor initialized: model={model_name}, "
-            f"host={ollama_host}, max_chars={max_input_chars}"
+            f"host={ollama_host}, max_chars={max_input_chars}, context_window={context_window}"
         )
 
     def extract(
@@ -273,6 +276,7 @@ Return ONLY the JSON object, no other text."""
                 options={
                     "temperature": self.temperature,
                     "num_predict": 800,  # Increased for more questions (8-15 instead of 5-10)
+                    "num_ctx": self.context_window  # Context window size
                 }
             )
 
