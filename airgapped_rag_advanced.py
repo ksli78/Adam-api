@@ -535,7 +535,11 @@ class AdvancedRAGPipeline:
 
         # Build document catalog for LLM
         doc_catalog = []
+        doc_number_to_id = {}  # Map document numbers to IDs for fallback parsing
+
         for i, doc in enumerate(all_documents, 1):
+            doc_number_to_id[str(i)] = doc['document_id']
+
             doc_info = f"""
 Document {i}:
 - ID: {doc['document_id']}
@@ -573,14 +577,20 @@ INSTRUCTIONS:
 3. Also consider if the document summary or topics are relevant
 4. Select ONLY documents that can actually answer the user's question
 5. If you find matching documents, select up to {max_documents} of the most relevant ones
-6. Return a JSON array of document IDs
+6. Return a JSON array with the "ID" field values (the long alphanumeric strings)
+
+CRITICAL - DOCUMENT IDENTIFICATION:
+- Each document has an "ID" field (e.g., "13fb5d84-7eeb-40b2-9410-a26d9aafe7d6")
+- You MUST return these exact ID values in your JSON array
+- DO NOT return the document number (e.g., "Document 1", "Document 2")
+- Example: ["13fb5d84-7eeb-40b2-9410-a26d9aafe7d6", "11ceb2fc-df0a-4460-8802-9ed6199b0809"]
 
 IMPORTANT:
-- Match questions by MEANING, not just exact words (e.g., "work hours" matches "working time", "schedule")
+- Match questions by MEANING, not just exact words (e.g., "work hours" matches "working time", "schedule", "overtime")
 - If NO documents match, return an empty array: []
 - Return ONLY the JSON array, no explanations
 
-Your response (JSON array of IDs only):"""
+Your response (JSON array of ID values only):"""
 
         logger.info(f"Sending document selection prompt to LLM (question: '{user_question}')")
 
@@ -607,9 +617,22 @@ Your response (JSON array of IDs only):"""
             if json_match:
                 selected_ids = json.loads(json_match.group(0))
 
-                # Validate that all IDs exist
-                valid_ids = [doc['document_id'] for doc in all_documents]
-                selected_ids = [doc_id for doc_id in selected_ids if doc_id in valid_ids]
+                # Handle case where LLM returns document numbers instead of IDs
+                # Convert any numeric strings to document IDs using our mapping
+                converted_ids = []
+                for item in selected_ids:
+                    if str(item) in doc_number_to_id:
+                        # LLM returned a document number, convert it
+                        actual_id = doc_number_to_id[str(item)]
+                        converted_ids.append(actual_id)
+                        logger.warning(f"LLM returned document number '{item}', converted to ID: {actual_id}")
+                    elif item in [doc['document_id'] for doc in all_documents]:
+                        # LLM correctly returned a document ID
+                        converted_ids.append(item)
+                    else:
+                        logger.warning(f"Ignoring invalid ID/number: {item}")
+
+                selected_ids = converted_ids
 
                 # Log which documents were selected with their titles
                 if selected_ids:
