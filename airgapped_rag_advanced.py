@@ -531,6 +531,8 @@ class AdvancedRAGPipeline:
             logger.warning("No documents found in the store")
             return []
 
+        logger.info(f"Evaluating {len(all_documents)} documents for question matching")
+
         # Build document catalog for LLM
         doc_catalog = []
         for i, doc in enumerate(all_documents, 1):
@@ -550,6 +552,12 @@ Document {i}:
 
         catalog_text = "\n".join(doc_catalog)
 
+        # Log the catalog for debugging (truncate if too long)
+        if len(catalog_text) > 2000:
+            logger.info(f"Document catalog (first 2000 chars):\n{catalog_text[:2000]}...")
+        else:
+            logger.info(f"Document catalog:\n{catalog_text}")
+
         # Build prompt for LLM
         prompt = f"""You are a document selection expert. Your task is to identify which documents can answer a user's question.
 
@@ -560,16 +568,21 @@ AVAILABLE DOCUMENTS:
 {catalog_text}
 
 INSTRUCTIONS:
-1. Analyze the user's question carefully
-2. Compare it against the "Questions this document can answer" for each document
-3. Also consider the document summaries and topics
-4. Select the documents that are most likely to contain the answer
-5. Select up to {max_documents} documents, ranked by relevance
-6. Return ONLY a JSON array of document IDs, like this: ["doc-id-1", "doc-id-2", "doc-id-3"]
+1. Read the user's question carefully
+2. For each document, check if ANY of its "Questions this document can answer" are similar to or can answer the user's question
+3. Also consider if the document summary or topics are relevant
+4. Select ONLY documents that can actually answer the user's question
+5. If you find matching documents, select up to {max_documents} of the most relevant ones
+6. Return a JSON array of document IDs
 
-If no documents can answer the question, return an empty array: []
+IMPORTANT:
+- Match questions by MEANING, not just exact words (e.g., "work hours" matches "working time", "schedule")
+- If NO documents match, return an empty array: []
+- Return ONLY the JSON array, no explanations
 
-Your response (JSON only):"""
+Your response (JSON array of IDs only):"""
+
+        logger.info(f"Sending document selection prompt to LLM (question: '{user_question}')")
 
         try:
             response = self.ollama_client.generate(
@@ -577,13 +590,13 @@ Your response (JSON only):"""
                 prompt=prompt,
                 options={
                     "temperature": 0.1,  # Low temperature for more deterministic selection
-                    "num_predict": 200
+                    "num_predict": 300  # Increased to allow for more IDs
                 }
             )
 
             # Parse the response to extract document IDs
             response_text = response['response'].strip()
-            logger.debug(f"LLM document selection response: {response_text}")
+            logger.info(f"LLM document selection raw response: {response_text}")
 
             # Try to parse as JSON
             import json
@@ -598,10 +611,24 @@ Your response (JSON only):"""
                 valid_ids = [doc['document_id'] for doc in all_documents]
                 selected_ids = [doc_id for doc_id in selected_ids if doc_id in valid_ids]
 
-                logger.info(f"LLM selected {len(selected_ids)} documents: {selected_ids}")
+                # Log which documents were selected with their titles
+                if selected_ids:
+                    selected_titles = []
+                    for doc_id in selected_ids:
+                        doc = next((d for d in all_documents if d['document_id'] == doc_id), None)
+                        if doc:
+                            selected_titles.append(f"{doc['document_title']} (type: {doc['document_type']})")
+
+                    logger.info(f"LLM selected {len(selected_ids)} documents:")
+                    for title in selected_titles:
+                        logger.info(f"  - {title}")
+                else:
+                    logger.warning("LLM returned empty selection - no matching documents found")
+
                 return selected_ids
             else:
                 logger.warning("Could not parse JSON from LLM response, falling back to empty list")
+                logger.warning(f"Unparseable response was: {response_text}")
                 return []
 
         except Exception as e:
