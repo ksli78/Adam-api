@@ -509,11 +509,14 @@ class AdvancedRAGPipeline:
         """
         Use LLM to intelligently select which documents can answer the user's question.
 
-        This method:
-        1. Gets all documents with their answerable_questions metadata
-        2. Sends the list to LLM with the user's question
-        3. LLM determines which documents are most relevant
-        4. Returns list of selected document IDs
+        Uses a two-stage approach:
+        1. Stage 1: Use BM25/semantic search to narrow down to top 30 candidates
+        2. Stage 2: Use LLM to select the most relevant documents from candidates
+
+        This approach:
+        - Handles large document collections (100s of documents)
+        - Stays within LLM context window limits
+        - Combines fast keyword matching with semantic reasoning
 
         Args:
             user_question: The user's natural language question
@@ -531,13 +534,57 @@ class AdvancedRAGPipeline:
             logger.warning("No documents found in the store")
             return []
 
-        logger.info(f"Evaluating {len(all_documents)} documents for question matching")
+        logger.info(f"Total documents in system: {len(all_documents)}")
 
-        # Build document catalog for LLM
+        # STAGE 1: Use hybrid search to narrow down candidates
+        # This handles large document collections efficiently
+        CANDIDATE_LIMIT = 30  # Number of candidates to send to LLM (fits in context window)
+
+        logger.info(f"Stage 1: Using hybrid search to find top {CANDIDATE_LIMIT} candidate documents")
+
+        # Use the existing hybrid search to get candidate chunks
+        candidate_chunks, _ = self.document_store.retrieve_with_parent_expansion(
+            query=user_question,
+            top_k=100,  # Get more chunks to cover more documents
+            expand_to_parents=False,  # Don't need parent expansion yet
+            use_hybrid=True,
+            bm25_weight=0.3  # Balance between BM25 and semantic
+        )
+
+        # Extract unique document IDs from candidate chunks
+        candidate_doc_ids = []
+        seen_doc_ids = set()
+        for chunk in candidate_chunks:
+            doc_id = chunk['metadata'].get('document_id')
+            if doc_id and doc_id not in seen_doc_ids:
+                candidate_doc_ids.append(doc_id)
+                seen_doc_ids.add(doc_id)
+                if len(candidate_doc_ids) >= CANDIDATE_LIMIT:
+                    break
+
+        if not candidate_doc_ids:
+            logger.warning("No candidate documents found in Stage 1 (hybrid search)")
+            return []
+
+        # Filter all_documents to only include candidates
+        candidate_documents = [doc for doc in all_documents if doc['document_id'] in candidate_doc_ids]
+
+        logger.info(f"Stage 1 complete: Narrowed to {len(candidate_documents)} candidate documents")
+
+        # Log the candidate document titles for debugging
+        candidate_titles = [f"{doc['document_title']} ({doc['document_type']})" for doc in candidate_documents[:10]]
+        logger.info(f"Top 10 candidates: {', '.join(candidate_titles)}")
+        if len(candidate_documents) > 10:
+            logger.info(f"... and {len(candidate_documents) - 10} more candidates")
+
+        # STAGE 2: Use LLM to select best documents from candidates
+        logger.info(f"Stage 2: Using LLM to select best documents from candidates")
+
+        # Build document catalog for LLM (using only candidates from Stage 1)
         doc_catalog = []
         doc_number_to_id = {}  # Map document numbers to IDs for fallback parsing
 
-        for i, doc in enumerate(all_documents, 1):
+        for i, doc in enumerate(candidate_documents, 1):
             doc_number_to_id[str(i)] = doc['document_id']
 
             doc_info = f"""
@@ -556,11 +603,13 @@ Document {i}:
 
         catalog_text = "\n".join(doc_catalog)
 
-        # Log the catalog for debugging (truncate if too long)
-        if len(catalog_text) > 2000:
-            logger.info(f"Document catalog (first 2000 chars):\n{catalog_text[:2000]}...")
+        logger.info(f"Document catalog size: {len(catalog_text)} characters, {len(candidate_documents)} documents")
+
+        # Log the catalog for debugging
+        if len(catalog_text) > 3000:
+            logger.info(f"Document catalog (first 3000 chars):\n{catalog_text[:3000]}...")
         else:
-            logger.info(f"Document catalog:\n{catalog_text}")
+            logger.info(f"Full document catalog:\n{catalog_text}")
 
         # Build prompt for LLM
         prompt = f"""You are a document selection expert. Your task is to identify which documents can answer a user's question.
@@ -625,8 +674,8 @@ Your response (JSON array of ID values only):"""
                         # LLM returned a document number, convert it
                         actual_id = doc_number_to_id[str(item)]
                         converted_ids.append(actual_id)
-                        logger.warning(f"LLM returned document number '{item}', converted to ID: {actual_id}")
-                    elif item in [doc['document_id'] for doc in all_documents]:
+                        logger.info(f"LLM returned document number '{item}', converted to ID: {actual_id}")
+                    elif item in [doc['document_id'] for doc in candidate_documents]:
                         # LLM correctly returned a document ID
                         converted_ids.append(item)
                     else:
@@ -638,15 +687,15 @@ Your response (JSON array of ID values only):"""
                 if selected_ids:
                     selected_titles = []
                     for doc_id in selected_ids:
-                        doc = next((d for d in all_documents if d['document_id'] == doc_id), None)
+                        doc = next((d for d in candidate_documents if d['document_id'] == doc_id), None)
                         if doc:
                             selected_titles.append(f"{doc['document_title']} (type: {doc['document_type']})")
 
-                    logger.info(f"LLM selected {len(selected_ids)} documents:")
+                    logger.info(f"Stage 2 complete: LLM selected {len(selected_ids)} final documents:")
                     for title in selected_titles:
                         logger.info(f"  - {title}")
                 else:
-                    logger.warning("LLM returned empty selection - no matching documents found")
+                    logger.warning("LLM returned empty selection - no matching documents found in candidates")
 
                 return selected_ids
             else:
