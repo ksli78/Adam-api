@@ -18,7 +18,9 @@
         "HF_HUB_DISABLE_SYMLINKS": "1",
         "HF_HUB_DISABLE_SYMLINKS_WARNING": "1",
         "HF_HOME": "${workspaceFolder}\\.hf",
-        "EMPLOYEE_DB_PASSWORD":"123456"
+        "EMPLOYEE_DB_PASSWORD":"123456",
+        "OLLAMA_HOST" : "http://adam.amentumspacemissions.com:11434",
+        "LLM_MODEL":"llama3.1:70b"
       },
       "console": "integratedTerminal",
       "justMyCode": true

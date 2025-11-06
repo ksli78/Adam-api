@@ -58,8 +58,8 @@ DOCS_DIR.mkdir(parents=True, exist_ok=True)
 CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Ollama configuration
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-LLM_MODEL = os.getenv("LLM_MODEL", "llama3:8b")
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://adam.amentumspacemissions.com:11434")
+LLM_MODEL = os.getenv("LLM_MODEL", "llama3.1:70b")
 
 # FastAPI app
 app = FastAPI(
