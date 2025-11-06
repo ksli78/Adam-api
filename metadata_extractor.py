@@ -65,11 +65,11 @@ class MetadataExtractor:
 
     def __init__(
         self,
-        model_name: str = "llama3.1:8b",
-        ollama_host: str = "http://localhost:11434",
+        model_name: str = "llama3.1:70b",
+        ollama_host: str = "http://adam.amentumspacemissions.com:11434",
         max_input_chars: int = 6000,
         temperature: float = 0.1,
-        context_window: int = 32768
+        context_window: int = 65536
     ):
         """
         Initialize the metadata extractor.
