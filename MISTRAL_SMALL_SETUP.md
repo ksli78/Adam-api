@@ -109,7 +109,7 @@ git pull origin claude/fix-torch-compiler-error-011CUqEPVfgyByW8D6bLk7ob
 
 The code is already configured to use Mistral Small by default:
 - `LLM_MODEL = "mistral-small:22b"`
-- `LLM_CONTEXT_WINDOW = 32768` (32K tokens)
+- `LLM_CONTEXT_WINDOW = 16384` (16K tokens, optimized for 32GB VRAM)
 - `OLLAMA_HOST = "http://adam.amentumspacemissions.com:11434"`
 
 ### Step 5: Restart Application
@@ -127,7 +127,7 @@ python airgapped_rag_advanced.py
 Check the startup logs for:
 
 ```
-INFO - MetadataExtractor initialized: model=mistral-small:22b, host=http://adam.amentumspacemissions.com:11434, context_window=32768
+INFO - MetadataExtractor initialized: model=mistral-small:22b, host=http://adam.amentumspacemissions.com:11434, context_window=16384
 ```
 
 ---
@@ -324,16 +324,26 @@ time docker exec ollama ollama run mistral-small:22b "test"
 
 ## Advanced Configuration
 
-### Increase Context Window (If Needed)
+### Context Window Tuning
 
-If you need more than 30 documents in Stage 2:
+The default 16K context window is optimized for 32GB VRAM stability:
 
 ```bash
-export LLM_CONTEXT_WINDOW="65536"  # 64K tokens
-docker-compose restart
+# Current optimized setting (default)
+export LLM_CONTEXT_WINDOW="16384"  # 16K tokens, ~20 docs in Stage 2
+
+# If you have VRAM headroom and need more documents
+export LLM_CONTEXT_WINDOW="32768"  # 32K tokens, ~30 docs in Stage 2
+
+# If still experiencing crashes, reduce further
+export LLM_CONTEXT_WINDOW="8192"   # 8K tokens, ~10 docs in Stage 2
 ```
 
-**Trade-off:** Uses more VRAM (~25-26GB total), slightly slower.
+**Important:**
+- 16K (default) balances stability and capacity
+- Higher values use more VRAM and may cause crashes
+- Lower values are more stable but select from fewer candidates
+- Restart application after changing: `docker-compose restart`
 
 ### Adjust Temperature
 
