@@ -63,9 +63,9 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://adam.amentumspacemissions.com:114
 LLM_MODEL = os.getenv("LLM_MODEL", "mistral-small:22b")  # Mistral Small 22B - excellent for RAG (~22GB VRAM)
 
 # LLM Context window configuration
-# Mistral Small supports up to 128K tokens, we use 32K for optimal performance
-# 32K is sufficient for ~50 documents with questions (~26K tokens)
-LLM_CONTEXT_WINDOW = int(os.getenv("LLM_CONTEXT_WINDOW", "32768"))  # 32K tokens
+# Mistral Small supports up to 128K tokens, we use 16K for optimal VRAM usage
+# 16K is sufficient for ~20 documents with questions in Stage 2 selection
+LLM_CONTEXT_WINDOW = int(os.getenv("LLM_CONTEXT_WINDOW", "16384"))  # 16K tokens
 
 # FastAPI app
 app = FastAPI(
@@ -545,7 +545,7 @@ class AdvancedRAGPipeline:
 
         # STAGE 1: Use hybrid search to narrow down candidates
         # This handles large document collections efficiently
-        CANDIDATE_LIMIT = 30  # Number of candidates to send to LLM (fits in context window)
+        CANDIDATE_LIMIT = 20  # Number of candidates to send to LLM (reduced from 30 to fit in 16K context)
 
         logger.info(f"Stage 1: Using hybrid search to find top {CANDIDATE_LIMIT} candidate documents")
 
