@@ -60,10 +60,10 @@ CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 # Ollama configuration
 # Remote Ollama server on development/production machine with 32GB VRAM (2 GPUs)
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://adam.amentumspacemissions.com:11434")
-LLM_MODEL = os.getenv("LLM_MODEL", "llama3.1:8b")  # 8b fits comfortably in 32GB VRAM (~8GB)
+LLM_MODEL = os.getenv("LLM_MODEL", "mistral-small:22b")  # Mistral Small 22B - excellent for RAG (~22GB VRAM)
 
 # LLM Context window configuration
-# llama3.1:8b supports up to 128K tokens, we use 32K for optimal performance
+# Mistral Small supports up to 128K tokens, we use 32K for optimal performance
 # 32K is sufficient for ~50 documents with questions (~26K tokens)
 LLM_CONTEXT_WINDOW = int(os.getenv("LLM_CONTEXT_WINDOW", "32768"))  # 32K tokens
 
