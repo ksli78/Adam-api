@@ -770,8 +770,8 @@ rag_pipeline = AdvancedRAGPipeline()
 # API Models
 class QueryRequest(BaseModel):
     prompt: str
-    top_k: int = 10
-    parent_limit: int = 5  # Increased from 3 to get more context sections
+    top_k: int = 30  # Increased from 10 to capture more relevant sections
+    parent_limit: int = 10  # Increased from 5 to provide richer context to LLM
     temperature: float = 0.3  # Increased from 0.1 - can help with model stability
     metadata_filter: Optional[Dict[str, Any]] = None
     use_hybrid: bool = True  # Use hybrid search (BM25 + semantic) by default
