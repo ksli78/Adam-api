@@ -753,7 +753,7 @@ Now provide your answer with inline citations after each point:"""
                 prompt=prompt,
                 options={
                     "temperature": temperature,
-                    "num_predict": 500,
+                    "num_predict": 1000,  # Increased from 500 to allow comprehensive answers with inline citations
                     "num_ctx": LLM_CONTEXT_WINDOW  # Context window size (32K for llama3.1:8b)
                 }
             )
