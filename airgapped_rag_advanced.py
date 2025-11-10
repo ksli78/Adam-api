@@ -735,10 +735,15 @@ INSTRUCTIONS:
 - Provide a direct, helpful answer to the question
 - Use information ONLY from the documents above
 - Include specific details (section numbers, dates, amounts) when relevant
-- Cite sources using this format: <span><a href="URL">FileName.pdf</a></span>
+- IMPORTANT: Add inline citations after EACH claim or bullet point using this format: (<span><a href="URL">FileName.pdf</a></span>)
+- Place citations immediately after the relevant statement, before the period
 - If information is missing, clearly state what cannot be answered
 
-Now provide your answer:"""
+CITATION EXAMPLE:
+✓ CORRECT: "Employees must submit requests via the Decisions tool (<span><a href="https://...">EN-PO-0301.pdf</a></span>)."
+✗ WRONG: "Employees must submit requests via the Decisions tool. For more details, see EN-PO-0301.pdf."
+
+Now provide your answer with inline citations after each point:"""
 
         logger.debug("Calling Ollama to generate answer...")
 
