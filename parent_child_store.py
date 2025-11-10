@@ -286,42 +286,19 @@ class ParentChildDocumentStore:
         child_embeddings = []
         child_metadatas = []
 
-        # Extract answerable questions to boost semantic search
-        answerable_questions = []
-        if document_metadata and 'answerable_questions' in document_metadata:
-            questions_str = document_metadata['answerable_questions']
-            if isinstance(questions_str, str):
-                # Parse from " || " separated string
-                answerable_questions = [q.strip() for q in questions_str.split('||') if q.strip()]
-            elif isinstance(questions_str, list):
-                answerable_questions = questions_str
-
-        # Prepare texts for embedding (augmented with questions)
-        child_texts_original = [chunk.text for chunk in child_chunks]
-
-        # Create augmented texts for embedding (includes questions for better search)
-        if answerable_questions:
-            logger.info(f"Augmenting {len(child_chunks)} child chunks with {len(answerable_questions)} answerable questions")
-            questions_text = "\n\n[Questions this document answers:]\n" + "\n".join(f"- {q}" for q in answerable_questions)
-            child_texts_for_embedding = [text + questions_text for text in child_texts_original]
-        else:
-            logger.debug("No answerable questions found, using original text for embedding")
-            child_texts_for_embedding = child_texts_original
-
-        # Generate embeddings using augmented texts (with questions)
-        logger.debug(f"Generating embeddings for {len(child_texts_for_embedding)} child chunks...")
+        # Generate embeddings in batch for efficiency (using clean chunk text only)
+        child_texts = [chunk.text for chunk in child_chunks]
+        logger.debug(f"Generating embeddings for {len(child_texts)} child chunks...")
         embeddings = self.embedding_model.encode(
-            child_texts_for_embedding,
+            child_texts,
             batch_size=32,
             show_progress_bar=False,
             convert_to_numpy=True
         )
 
-        for i, (chunk, embedding) in enumerate(zip(child_chunks, embeddings)):
+        for chunk, embedding in zip(child_chunks, embeddings):
             child_ids.append(chunk.id)
-            # Store augmented text (with questions) so BM25 can also benefit from questions
-            # LLM is smart enough to focus on main content and ignore the questions section
-            child_documents.append(child_texts_for_embedding[i])
+            child_documents.append(chunk.text)
             child_embeddings.append(embedding.tolist())
 
             # Merge metadata
