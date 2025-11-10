@@ -776,8 +776,7 @@ class QueryRequest(BaseModel):
     metadata_filter: Optional[Dict[str, Any]] = None
     use_hybrid: bool = True  # Use hybrid search (BM25 + semantic) by default
     bm25_weight: float = 0.2  # Lowered from 0.5 - trust semantics more (80% semantic, 20% BM25)
-    use_llm_selection: bool = False  # NEW: Use LLM-based document selection instead of hybrid search
-    max_documents: int = 3  # NEW: Max documents to select when using LLM selection
+    use_llm_selection: bool = False  # DEPRECATED: Use hybrid search instead (faster and more accurate)
 
 
 class QueryResponse(BaseModel):
@@ -826,20 +825,23 @@ async def upload_document(
 @app.post("/query", response_model=QueryResponse)
 async def query(request: QueryRequest):
     """
-    Query the RAG system with two modes:
+    Query the RAG system using HYBRID SEARCH (RECOMMENDED):
 
-    1. HYBRID SEARCH MODE (default, use_llm_selection=False):
-       - Retrieves child chunks using hybrid search (BM25 + semantic)
-       - Expands to parent chunks for context
-       - Generates answer from chunks
-       - Set use_hybrid=False for pure semantic search
-       - Adjust bm25_weight (0.0-1.0) to control BM25 vs semantic influence
+    - Combines semantic search (embeddings) with BM25 (keyword matching)
+    - Answerable questions are embedded with chunks for better matching
+    - Fast (< 5 seconds) and accurate
+    - Retrieves relevant child chunks, expands to parent chunks for context
+    - Returns answer with citations
 
-    2. LLM DOCUMENT SELECTION MODE (use_llm_selection=True):
-       - Uses LLM to select relevant documents based on answerable_questions
-       - Fetches full text of selected documents
-       - Generates answer from complete documents
-       - Set max_documents to control how many documents to select (default: 3)
+    Parameters:
+    - prompt: User's question
+    - top_k: Number of chunks to retrieve (default: 10)
+    - parent_limit: Max parent chunks for LLM context (default: 5)
+    - use_hybrid: Enable hybrid search (default: True, RECOMMENDED)
+    - bm25_weight: BM25 influence (0.0-1.0, default: 0.2)
+    - temperature: LLM temperature for answer generation (default: 0.3)
+
+    Note: use_llm_selection is deprecated (slow, less accurate than hybrid search)
     """
     try:
         # Route to appropriate query method based on use_llm_selection
