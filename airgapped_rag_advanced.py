@@ -659,6 +659,15 @@ Now provide your answer with inline citations after each point:"""
 
             logger.info(f"[STREAM COMPLETE] Generated {token_count} tokens, {len(full_answer)} characters")
 
+            # Generate and send follow-up question suggestions
+            followup_questions = await self.generate_followup_questions(
+                question=question,
+                answer=full_answer,
+                citations=citations
+            )
+            yield f"data: {json.dumps({'type': 'followups', 'questions': followup_questions})}\n\n"
+            await asyncio.sleep(0)
+
             # Yield completion with final stats
             yield f"data: {json.dumps({'type': 'done', 'stats': {'child_chunks_retrieved': len(child_results), 'parent_chunks_used': len(parent_results), 'answer_length': len(full_answer), 'tokens_streamed': token_count}})}\n\n"
             await asyncio.sleep(0)
@@ -671,6 +680,108 @@ Now provide your answer with inline citations after each point:"""
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
             await asyncio.sleep(0)
             logger.info("[STREAM END] Generator exiting after error")
+
+    async def generate_followup_questions(
+        self,
+        question: str,
+        answer: str,
+        citations: List[Dict[str, Any]]
+    ) -> List[str]:
+        """
+        Generate contextual follow-up questions for RAG responses.
+
+        Args:
+            question: Original user question
+            answer: Generated answer
+            citations: List of document citations used
+
+        Returns:
+            List of 2-3 suggested follow-up questions
+        """
+        # Build context from citations
+        doc_titles = list(set([c.get('document_title', 'Unknown') for c in citations[:3]]))
+        context_text = f"Documents referenced: {', '.join(doc_titles)}" if doc_titles else "Policy documents"
+
+        prompt = f"""You are helping generate follow-up questions for a policy document query system.
+
+ORIGINAL QUESTION: {question}
+
+ANSWER SUMMARY: {answer[:500]}...
+
+CONTEXT: {context_text}
+
+Generate 2-3 natural, conversational follow-up questions that a user might want to ask based on this answer.
+
+RULES:
+1. Questions should be SHORT and SPECIFIC (5-10 words max)
+2. Questions should be directly related to the answer or mentioned policies
+3. Use natural language (no overly formal phrasing)
+4. Common follow-up types:
+   - Clarification: "What are the specific requirements for...?" or "How often must...?"
+   - Related policies: "What are the rules for...?" or "Are there exceptions to...?"
+   - Procedures: "How do I...?" or "What's the process for...?"
+   - Deadlines: "When is the deadline for...?" or "How long does it take to...?"
+   - Responsibilities: "Who is responsible for...?" or "Who should I contact about...?"
+5. If answer mentions specific policy numbers, suggest related policy questions
+6. Return ONLY the questions, one per line, no numbering, no explanations
+
+EXAMPLES:
+
+Original: "What is the PTO policy?"
+Answer: "Employees accrue 15 days of PTO per year..."
+Follow-ups:
+How do I request PTO?
+Can I carry over unused PTO?
+What are the blackout dates?
+
+Original: "What is required for purchase orders?"
+Answer: "All purchase orders over $10,000 require director approval..."
+Follow-ups:
+How long does approval take?
+What happens if it's under $10,000?
+Who do I submit the PO to?
+
+Original: "What is the travel reimbursement policy?"
+Answer: "Employees must submit receipts within 30 days..."
+Follow-ups:
+What expenses are reimbursable?
+How do I submit receipts?
+What's the per diem rate?
+
+Now generate follow-up questions:"""
+
+        try:
+            response = self.ollama_client.generate(
+                model=LLM_MODEL,
+                prompt=prompt,
+                options={
+                    "temperature": 0.7,
+                    "num_predict": 150
+                }
+            )
+
+            # Parse response - one question per line
+            questions_text = response['response'].strip()
+            questions = [q.strip() for q in questions_text.split('\n') if q.strip()]
+
+            # Remove any numbering (1., 2., -, *)
+            import re
+            questions = [re.sub(r'^[\d\.\-\*\)]+\s*', '', q) for q in questions]
+
+            # Limit to 3 questions
+            questions = questions[:3]
+
+            logger.info(f"Generated {len(questions)} RAG follow-up questions: {questions}")
+            return questions
+
+        except Exception as e:
+            logger.error(f"Error generating RAG follow-up questions: {e}", exc_info=True)
+            # Return generic follow-ups as fallback
+            return [
+                "Tell me more about this policy",
+                "Are there any exceptions?",
+                "Who should I contact for questions?"
+            ]
 
     async def query_with_llm_selection(
         self,
@@ -1087,6 +1198,7 @@ class QueryResponse(BaseModel):
     answer: str
     citations: List[Dict[str, Any]]
     retrieval_stats: Dict[str, Any]
+    suggested_followups: Optional[List[str]] = None
 
 
 # API Endpoints
@@ -1172,6 +1284,14 @@ async def query(request: QueryRequest):
                 bm25_weight=request.bm25_weight
             )
 
+        # Generate follow-up question suggestions
+        followup_questions = await rag_pipeline.generate_followup_questions(
+            question=request.prompt,
+            answer=result['answer'],
+            citations=result['citations']
+        )
+        result['suggested_followups'] = followup_questions
+
         return result
 
     except Exception as e:
@@ -1195,10 +1315,13 @@ async def query_stream_endpoint(request: QueryRequest):
     3. token: Individual tokens from LLM as they're generated
        {"type": "token", "content": "word"}
 
-    4. done: Completion signal with stats
+    4. followups: Suggested follow-up questions (rendered as clickable buttons in UI)
+       {"type": "followups", "questions": ["How do I...?", "What are the...?"]}
+
+    5. done: Completion signal with stats
        {"type": "done", "stats": {child_chunks_retrieved, parent_chunks_used, answer_length}}
 
-    5. error: Error message if something fails
+    6. error: Error message if something fails
        {"type": "error", "message": "Error description"}
 
     Benefits over /query endpoint:

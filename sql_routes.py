@@ -8,7 +8,7 @@ import logging
 import os
 import json
 import asyncio
-from typing import Optional, AsyncGenerator
+from typing import Optional, AsyncGenerator, List
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -44,6 +44,7 @@ class SQLQueryResponse(BaseModel):
     conversation_warning: Optional[str] = None
     query_type: str
     execution_time_ms: Optional[int] = None
+    suggested_followups: Optional[List[str]] = None
 
 
 # Initialize conversation manager (shared with document RAG)
@@ -292,6 +293,13 @@ async def query_employee_directory(request: SQLQueryRequest):
                 f"Please contact IT if you need a complete dataset with all results."
             )
 
+        # Generate follow-up question suggestions
+        followup_questions = await sql_handler.generate_followup_questions(
+            user_query=request.prompt,
+            results=results,
+            metadata=exec_metadata
+        )
+
         return SQLQueryResponse(
             answer=formatted_answer,
             rows_returned=exec_metadata['rows_returned'],
@@ -299,7 +307,8 @@ async def query_employee_directory(request: SQLQueryRequest):
             overflow_warning=overflow_warning,
             conversation_id=conversation_id,
             conversation_warning="Conversation limit reached - please start a new conversation" if conv_limit_reached else None,
-            query_type="employee_directory"
+            query_type="employee_directory",
+            suggested_followups=followup_questions
         )
 
     except Exception as e:
@@ -320,10 +329,13 @@ async def query_employee_directory_stream(request: SQLQueryRequest):
     2. token: Individual tokens from LLM as they're generated
        {"type": "token", "content": "word"}
 
-    3. done: Completion signal with metadata
+    3. followups: Suggested follow-up questions (rendered as clickable buttons in UI)
+       {"type": "followups", "questions": ["What is John's email?", "Who reports to John?"]}
+
+    4. done: Completion signal with metadata
        {"type": "done", "metadata": {...}}
 
-    4. error: Error message if something fails
+    5. error: Error message if something fails
        {"type": "error", "message": "Error description"}
 
     Benefits over /query-employee endpoint:
@@ -331,6 +343,7 @@ async def query_employee_directory_stream(request: SQLQueryRequest):
     - Perceived speed improvement (feels 3x faster)
     - Professional UX like ChatGPT
     - Same quality as regular endpoint
+    - Includes contextual follow-up suggestions
 
     Example queries:
     - "Find John Smith"
@@ -535,6 +548,15 @@ async def query_employee_directory_stream(request: SQLQueryRequest):
                 content=conversation_content,
                 query_type="employee_directory"
             )
+
+            # Generate and send follow-up question suggestions
+            followup_questions = await sql_handler.generate_followup_questions(
+                user_query=request.prompt,
+                results=results,
+                metadata=exec_metadata
+            )
+            yield f"data: {json.dumps({'type': 'followups', 'questions': followup_questions})}\n\n"
+            await asyncio.sleep(0)
 
             # Send completion message with metadata
             yield f"data: {json.dumps({'type': 'done', 'metadata': {'rows_returned': exec_metadata['rows_returned'], 'conversation_id': conversation_id, 'conversation_warning': 'Conversation limit reached - please start a new conversation' if conv_limit_reached else None}})}\n\n"
