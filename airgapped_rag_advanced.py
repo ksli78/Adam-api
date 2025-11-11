@@ -289,25 +289,83 @@ class AdvancedRAGPipeline:
         logger.info(f"Processing query: {question} (hybrid={use_hybrid}, bm25_weight={bm25_weight})")
 
         try:
-            # Retrieve with parent expansion (using hybrid search)
-            child_results, parent_results = self.document_store.retrieve_with_parent_expansion(
+            # Step 1: Use hybrid search to get top 30 candidates (casts wide net)
+            child_results, _ = self.document_store.retrieve_with_parent_expansion(
                 query=question,
-                top_k=top_k,
-                expand_to_parents=True,
-                parent_limit=parent_limit,
+                top_k=30,  # Get more candidates for reranking
+                expand_to_parents=False,  # Don't expand yet - we'll rerank first
                 metadata_filter=metadata_filter,
                 use_hybrid=use_hybrid,
                 bm25_weight=bm25_weight
             )
 
-            # Check if we have insufficient results (weak matches)
-            # If we retrieved very few chunks, it means the strict BM25 filter
-            # eliminated most documents, indicating poor keyword match
-            # With BM25 threshold at 0.95, even 1 chunk is a strong signal
+            # Check if we have insufficient results
             MIN_CHUNKS_THRESHOLD = 1
-
-            if not parent_results or len(child_results) < MIN_CHUNKS_THRESHOLD:
+            if len(child_results) < MIN_CHUNKS_THRESHOLD:
                 logger.warning(f"Insufficient results found: {len(child_results)} child chunks")
+                return {
+                    "answer": (
+                        "I couldn't find relevant information about your question in the available documents.<br><br>"
+                        "Here are some suggestions:<br>"
+                        "• Try rephrasing your question with different keywords<br>"
+                        "• Check the <a href='https://portal.amentumspacemissions.com/MS/Pages/MSDefaultHomePage.aspx' target='_blank'>Management System</a> "
+                        "where all policy documents are housed<br>"
+                        "• If you're looking for a specific policy, try including the policy number (e.g., EN-PO-XXXX)"
+                    ),
+                    "citations": [],
+                    "confidence": 0.0,
+                    "retrieval_stats": {
+                        "child_chunks_retrieved": len(child_results),
+                        "parent_chunks_used": 0,
+                        "message": "Insufficient relevant documents found"
+                    }
+                }
+
+            # Step 2: SEMANTIC RERANKING - Sort by semantic score only (ignore BM25 noise)
+            logger.info(f"Reranking {len(child_results)} chunks by semantic similarity...")
+            child_results_reranked = sorted(child_results, key=lambda x: x.get('semantic_score', 0), reverse=True)
+
+            # Take top 5 by semantic similarity
+            SEMANTIC_TOP_K = 5
+            top_semantic_chunks = child_results_reranked[:SEMANTIC_TOP_K]
+
+            logger.info(f"Top {SEMANTIC_TOP_K} chunks by semantic score:")
+            for i, chunk in enumerate(top_semantic_chunks, 1):
+                logger.info(
+                    f"  Rank {i}: {chunk['metadata'].get('document_title', 'Unknown')} - "
+                    f"{chunk['metadata'].get('section_title', '')} "
+                    f"(semantic={chunk.get('semantic_score', 0):.3f})"
+                )
+
+            # Step 3: Expand top semantic chunks to parents
+            parent_ids_seen = set()
+            parent_results = []
+
+            for chunk in top_semantic_chunks:
+                parent_id = chunk['metadata'].get('parent_id')
+                if parent_id and parent_id not in parent_ids_seen:
+                    # Fetch the parent chunk
+                    parent = self.document_store.parent_collection.get(
+                        ids=[parent_id],
+                        include=["documents", "metadatas"]
+                    )
+
+                    if parent['ids']:
+                        parent_results.append({
+                            "id": parent['ids'][0],
+                            "text": parent['documents'][0],
+                            "metadata": parent['metadatas'][0]
+                        })
+                        parent_ids_seen.add(parent_id)
+
+                        # Limit to parent_limit
+                        if len(parent_results) >= parent_limit:
+                            break
+
+            logger.info(f"Expanded to {len(parent_results)} parent chunks")
+
+            if not parent_results:
+                logger.warning("No parent chunks found after reranking")
                 return {
                     "answer": (
                         "I couldn't find relevant information about your question in the available documents.<br><br>"
@@ -361,7 +419,9 @@ class AdvancedRAGPipeline:
                 "citations": citations,
                 "retrieval_stats": {
                     "child_chunks_retrieved": len(child_results),
+                    "semantic_reranked_top": SEMANTIC_TOP_K,
                     "parent_chunks_used": len(parent_results),
+                    "retrieval_method": "hybrid_search_with_semantic_reranking",
                     "metadata_filter": metadata_filter
                 }
             }
@@ -775,13 +835,13 @@ rag_pipeline = AdvancedRAGPipeline()
 # API Models
 class QueryRequest(BaseModel):
     prompt: str
-    top_k: int = 30  # Increased from 10 to capture more relevant sections
-    parent_limit: int = 10  # Increased from 5 to provide richer context to LLM
-    temperature: float = 0.3  # Increased from 0.1 - can help with model stability
+    top_k: int = 30  # Get 30 candidates for semantic reranking
+    parent_limit: int = 5  # Top 5 parents after semantic reranking
+    temperature: float = 0.3  # LLM temperature for answer generation
     metadata_filter: Optional[Dict[str, Any]] = None
     use_hybrid: bool = True  # Use hybrid search (BM25 + semantic) by default
-    bm25_weight: float = 0.2  # Lowered from 0.5 - trust semantics more (80% semantic, 20% BM25)
-    use_llm_selection: bool = False  # DEPRECATED: Use hybrid search instead (faster and more accurate)
+    bm25_weight: float = 0.2  # Weight for BM25 (0.2 = 80% semantic, 20% BM25)
+    use_llm_selection: bool = False  # DEPRECATED: Use semantic reranking instead
 
 
 class QueryResponse(BaseModel):
@@ -830,23 +890,27 @@ async def upload_document(
 @app.post("/query", response_model=QueryResponse)
 async def query(request: QueryRequest):
     """
-    Query the RAG system using HYBRID SEARCH (RECOMMENDED):
+    Query the RAG system using HYBRID SEARCH + SEMANTIC RERANKING:
 
-    - Combines semantic search (embeddings) with BM25 (keyword matching)
-    - Answerable questions are embedded with chunks for better matching
-    - Fast (< 5 seconds) and accurate
-    - Retrieves relevant child chunks, expands to parent chunks for context
-    - Returns answer with citations
+    Process:
+    1. Stage 1: Hybrid search (BM25 + semantic) retrieves 30 candidate chunks
+    2. Stage 2: Semantic reranking picks top 5 chunks by semantic similarity
+    3. Stage 3: Expand to parent chunks for rich context
+    4. Stage 4: LLM generates answer with inline citations
+
+    Benefits:
+    - BM25 casts wide net (handles keyword variations)
+    - Semantic reranking eliminates BM25 noise (focuses on meaning)
+    - Fast (< 15 seconds) and accurate
+    - Only top 5 most relevant sections sent to LLM
 
     Parameters:
     - prompt: User's question
-    - top_k: Number of chunks to retrieve (default: 10)
-    - parent_limit: Max parent chunks for LLM context (default: 5)
-    - use_hybrid: Enable hybrid search (default: True, RECOMMENDED)
-    - bm25_weight: BM25 influence (0.0-1.0, default: 0.2)
-    - temperature: LLM temperature for answer generation (default: 0.3)
-
-    Note: use_llm_selection is deprecated (slow, less accurate than hybrid search)
+    - top_k: Candidates for reranking (default: 30, don't change)
+    - parent_limit: Max parents after reranking (default: 5)
+    - use_hybrid: Enable hybrid search (default: True)
+    - bm25_weight: BM25 weight in Stage 1 (default: 0.2)
+    - temperature: LLM temperature (default: 0.3)
     """
     try:
         # Route to appropriate query method based on use_llm_selection
