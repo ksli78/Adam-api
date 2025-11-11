@@ -636,12 +636,13 @@ Now provide your answer with inline citations after each point:"""
             for chunk in response:
                 chunk_count += 1
 
-                # Log EVERY chunk to debug buffering issue
+                # Log EVERY chunk to debug buffering issue (chunk is a Pydantic GenerateResponse object)
                 if chunk_count <= 5 or chunk_count % 10 == 0:
-                    logger.info(f"Received chunk #{chunk_count}: {chunk.keys()}")
+                    logger.info(f"Received chunk #{chunk_count}: done={getattr(chunk, 'done', None)}, has_response={hasattr(chunk, 'response')}")
 
-                if 'response' in chunk:
-                    token = chunk['response']
+                # Access response attribute directly (chunk is GenerateResponse object, not dict)
+                if hasattr(chunk, 'response') and chunk.response:
+                    token = chunk.response
                     full_answer += token
                     token_count += 1
 
