@@ -639,8 +639,12 @@ Now provide your answer with inline citations after each point:"""
                     # Replace newlines with <br> for HTML display (same as regular endpoint)
                     display_token = token.replace('\n', '<br>')
 
-                    # Yield each token immediately
+                    # Yield each token immediately with explicit flush
                     yield f"data: {json.dumps({'type': 'token', 'content': display_token})}\n\n"
+
+                    # Force uvicorn to flush by yielding a comment (SSE comments are ignored by parsers)
+                    # This prevents buffering and ensures tokens arrive in real-time
+                    yield ": flush\n\n"
 
                     # Log at key milestones to verify streaming is working
                     if token_count in [1, 10, 50, 100, 200, 300, 400, 500] or token_count % 100 == 0:
