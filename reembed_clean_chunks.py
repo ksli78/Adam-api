@@ -104,7 +104,8 @@ def reembed_clean_chunks():
     store.child_collection.update(
         ids=all_chunks['ids'],
         documents=cleaned_texts,  # Clean text without questions
-        embeddings=[emb.tolist() for emb in all_embeddings]  # New embeddings
+        embeddings=[emb.tolist() for emb in all_embeddings],  # New embeddings
+        metadatas=all_chunks['metadatas']  # CRITICAL: Preserve metadata including parent_chunk_id!
     )
 
     logger.info(f"\n{'='*60}")
