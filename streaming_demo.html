@@ -205,11 +205,12 @@
                 bm25_weight: 0.2
             };
 
-            // Make POST request and handle SSE stream
+            // Make POST request and handle SSE stream with aggressive flushing
             fetch('http://localhost:8000/query-stream', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
+                    'Cache-Control': 'no-cache',
                 },
                 body: JSON.stringify(payload)
             })
@@ -222,34 +223,66 @@
             .then(body => {
                 const reader = body.getReader();
                 const decoder = new TextDecoder();
+                let buffer = '';
+
+                function processBuffer() {
+                    const lines = buffer.split('\n');
+                    // Keep the last incomplete line in the buffer
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const dataJson = line.substring(6);
+                            try {
+                                const data = JSON.parse(dataJson);
+                                handleSSEMessage(data);
+                            } catch (e) {
+                                console.error('Failed to parse SSE data:', e, 'Line:', line);
+                            }
+                        }
+                    }
+                }
+
+                let chunkCount = 0;
+                let lastLogTime = Date.now();
 
                 function readStream() {
                     reader.read().then(({done, value}) => {
                         if (done) {
-                            console.log('Stream complete');
+                            console.log('Stream complete - received', chunkCount, 'chunks from browser');
+                            // Process any remaining buffer
+                            if (buffer) {
+                                processBuffer();
+                            }
                             askBtn.disabled = false;
                             askBtn.innerHTML = 'Ask Question';
                             return;
                         }
 
-                        // Decode chunk and process SSE messages
-                        const chunk = decoder.decode(value, {stream: true});
-                        const lines = chunk.split('\n');
+                        chunkCount++;
+                        const now = Date.now();
+                        const timeSinceLastChunk = now - lastLogTime;
 
-                        for (const line of lines) {
-                            if (line.startsWith('data: ')) {
-                                const dataJson = line.substring(6);
-                                try {
-                                    const data = JSON.parse(dataJson);
-                                    handleSSEMessage(data);
-                                } catch (e) {
-                                    console.error('Failed to parse SSE data:', e);
-                                }
-                            }
+                        // Log every chunk for first 5, then every 10th
+                        if (chunkCount <= 5 || chunkCount % 10 === 0) {
+                            console.log(`Browser received chunk #${chunkCount} (${timeSinceLastChunk}ms since last, ${value.length} bytes)`);
                         }
+                        lastLogTime = now;
 
-                        // Continue reading
+                        // Decode chunk and add to buffer
+                        const chunk = decoder.decode(value, {stream: true});
+                        buffer += chunk;
+
+                        // Process complete lines immediately
+                        processBuffer();
+
+                        // Continue reading immediately (don't wait)
                         readStream();
+                    }).catch(error => {
+                        console.error('Stream read error:', error);
+                        showStatus('Stream error: ' + error.message, true);
+                        askBtn.disabled = false;
+                        askBtn.innerHTML = 'Ask Question';
                     });
                 }
 
