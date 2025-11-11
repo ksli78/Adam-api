@@ -609,6 +609,10 @@ FORMATTED ANSWER:"""
             logger.info(f"LLM response length: {len(answer)} chars, starts with: {answer[:100]}")
             logger.info(f"Response contains table: {'<table' in answer.lower()}")
 
+            # Convert markdown formatting to HTML (bold and lists) BEFORE table processing
+            # This ensures consistent formatting across all responses
+            answer = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', answer)
+
             # Count how many rows are in the generated table
             if '<table' in answer.lower():
                 row_count = answer.lower().count('<tr>') - 1  # Subtract header row
@@ -631,11 +635,47 @@ FORMATTED ANSWER:"""
                 parts = re.split(r'(<table[^>]*>.*?</table>)', answer, flags=re.DOTALL | re.IGNORECASE)
                 for i in range(len(parts)):
                     if not parts[i].lower().startswith('<table'):
-                        parts[i] = parts[i].replace('\n', '<br>')
+                        # Convert markdown lists to HTML lists
+                        lines = parts[i].split('\n')
+                        processed = []
+                        in_list = False
+                        for line in lines:
+                            if line.strip().startswith('- '):
+                                if not in_list:
+                                    processed.append('<ul>')
+                                    in_list = True
+                                processed.append(f'<li>{line.strip()[2:]}</li>')
+                            else:
+                                if in_list:
+                                    processed.append('</ul>')
+                                    in_list = False
+                                processed.append(line)
+                        if in_list:
+                            processed.append('</ul>')
+                        parts[i] = '<br>'.join(processed)
                 answer = ''.join(parts)
             else:
-                # No table: Convert newlines to HTML line breaks for better display
-                answer = answer.replace('\n', '<br>')
+                # No table: Convert markdown lists and newlines to HTML
+                lines = answer.split('\n')
+                processed = []
+                in_list = False
+                for line in lines:
+                    if line.strip().startswith('- '):
+                        if not in_list:
+                            processed.append('<ul>')
+                            in_list = True
+                        processed.append(f'<li>{line.strip()[2:]}</li>')
+                    else:
+                        if in_list:
+                            processed.append('</ul>')
+                            in_list = False
+                        if line.strip() or not processed:
+                            processed.append(line)
+                        else:
+                            processed.append('<br>')
+                if in_list:
+                    processed.append('</ul>')
+                answer = '<br>'.join(processed)
 
                 # Aggressively collapse excessive consecutive line breaks
                 # This is a safety net for LLM inconsistencies

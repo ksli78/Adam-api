@@ -18,6 +18,7 @@ import uuid
 import json
 import sys
 import asyncio
+import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional, AsyncGenerator
 from datetime import datetime
@@ -51,6 +52,63 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def convert_markdown_to_html(text: str) -> str:
+    """
+    Convert markdown formatting to HTML for better display.
+
+    Converts:
+    - **bold** to <b>bold</b>
+    - Lines starting with "- " to <li> items (wrapped in <ul>)
+    - Newlines to <br>
+
+    Args:
+        text: Text with markdown formatting
+
+    Returns:
+        Text with HTML formatting
+    """
+    # Convert **bold** to <b>bold</b>
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+
+    # Split by newlines to process line by line
+    lines = text.split('\n')
+    processed_lines = []
+    in_list = False
+
+    for line in lines:
+        # Check if line starts with "- " (bullet point)
+        if line.strip().startswith('- '):
+            # Remove the "- " and wrap in <li>
+            list_item = line.strip()[2:]  # Remove "- "
+            if not in_list:
+                # Start a new list
+                processed_lines.append('<ul>')
+                in_list = True
+            processed_lines.append(f'<li>{list_item}</li>')
+        else:
+            # Not a list item
+            if in_list:
+                # Close the previous list
+                processed_lines.append('</ul>')
+                in_list = False
+            if line.strip():  # Only add non-empty lines
+                processed_lines.append(line)
+            elif processed_lines:  # Empty line, add break if not at start
+                processed_lines.append('<br>')
+
+    # Close list if still open
+    if in_list:
+        processed_lines.append('</ul>')
+
+    # Join with <br> for line breaks
+    result = '<br>'.join(processed_lines)
+
+    # Clean up multiple consecutive <br> tags
+    result = re.sub(r'(<br>)+', '<br>', result)
+
+    return result
 
 # Configuration
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data/airgapped_rag"))
@@ -431,8 +489,8 @@ class AdvancedRAGPipeline:
             # Generate answer with LLM
             answer = await self._generate_answer(question, context, temperature)
 
-            # Replace newlines with HTML line breaks for better display
-            answer = answer.replace('\n', '<br>')
+            # Convert markdown to HTML for better display
+            answer = convert_markdown_to_html(answer)
 
             # Build citations
             citations = []
@@ -636,6 +694,7 @@ Now provide your answer with inline citations after each point:"""
             # Stream tokens as they're generated
             full_answer = ""
             token_count = 0
+            last_display_length = 0  # Track what we've already sent to client
 
             logger.info("[STREAM] Starting LLM token generation...")
 
@@ -646,16 +705,21 @@ Now provide your answer with inline citations after each point:"""
                     full_answer += token
                     token_count += 1
 
-                    # Replace newlines with <br> for HTML display (same as regular endpoint)
-                    display_token = token.replace('\n', '<br>')
-
                     # DEBUG: Log first 5 tokens and every 50th token to verify streaming
                     if token_count <= 5 or token_count % 50 == 0:
                         logger.info(f"[STREAM] Token #{token_count}: {repr(token[:30])}")
 
-                    # CRITICAL: Yield token and immediately yield control to event loop
-                    yield f"data: {json.dumps({'type': 'token', 'content': display_token})}\n\n"
-                    await asyncio.sleep(0)  # THIS IS THE KEY - yields control and flushes to client!
+                    # Convert accumulated answer to HTML (handles markdown)
+                    display_answer = convert_markdown_to_html(full_answer)
+
+                    # Only send the NEW portion (what we haven't sent yet)
+                    if len(display_answer) > last_display_length:
+                        new_content = display_answer[last_display_length:]
+                        last_display_length = len(display_answer)
+
+                        # CRITICAL: Yield new content and immediately yield control to event loop
+                        yield f"data: {json.dumps({'type': 'token', 'content': new_content})}\n\n"
+                        await asyncio.sleep(0)  # THIS IS THE KEY - yields control and flushes to client!
 
             logger.info(f"[STREAM COMPLETE] Generated {token_count} tokens, {len(full_answer)} characters")
 
@@ -776,8 +840,8 @@ Now provide your answer with inline citations after each point:"""
             # Step 4: Generate answer with LLM
             answer = await self._generate_answer(question, context, temperature)
 
-            # Replace newlines with HTML line breaks
-            answer = answer.replace('\n', '<br>')
+            # Convert markdown to HTML for better display
+            answer = convert_markdown_to_html(answer)
 
             # Step 5: Build citations (document-level, not chunk-level)
             citations = []
