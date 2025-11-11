@@ -19,6 +19,59 @@ import ollama
 logger = logging.getLogger(__name__)
 
 
+# Title expansion dictionary for smart matching
+# Maps common title terms and abbreviations to their variants
+TITLE_EXPANSIONS = {
+    # Vice President variants
+    "vp": ["VP", "Vice President", "V.P.", "Vice-President"],
+    "vice president": ["VP", "Vice President", "V.P.", "Vice-President"],
+    "vice-president": ["VP", "Vice President", "V.P.", "Vice-President"],
+
+    # Senior Vice President
+    "svp": ["SVP", "Senior VP", "Senior Vice President", "Sr. Vice President", "Sr VP"],
+    "senior vp": ["SVP", "Senior VP", "Senior Vice President", "Sr. Vice President"],
+    "senior vice president": ["SVP", "Senior VP", "Senior Vice President", "Sr. Vice President"],
+
+    # Executive Vice President
+    "evp": ["EVP", "Executive VP", "Executive Vice President", "Exec VP"],
+    "executive vp": ["EVP", "Executive VP", "Executive Vice President"],
+    "executive vice president": ["EVP", "Executive VP", "Executive Vice President"],
+
+    # Director variants
+    "director": ["Director", "Dir"],
+    "dir": ["Director", "Dir"],
+
+    # Manager variants
+    "manager": ["Manager", "Mgr"],
+    "mgr": ["Manager", "Mgr"],
+
+    # Operations variants
+    "operations": ["Operations", "Operation", "Ops"],
+    "operation": ["Operations", "Operation", "Ops"],
+    "ops": ["Operations", "Operation", "Ops"],
+
+    # Technology variants
+    "technology": ["Technology", "Tech"],
+    "tech": ["Technology", "Tech"],
+
+    # Information variants
+    "information": ["Information", "Info"],
+    "info": ["Information", "Info"],
+
+    # Common department abbreviations
+    "hr": ["HR", "Human Resources", "Human Resource"],
+    "human resources": ["HR", "Human Resources", "Human Resource"],
+    "human resource": ["HR", "Human Resources", "Human Resource"],
+
+    "it": ["IT", "Information Technology", "Info Tech"],
+    "information technology": ["IT", "Information Technology", "Info Tech"],
+
+    # Enterprise variants
+    "enterprise": ["Enterprise", "Ent"],
+    "ent": ["Enterprise", "Ent"],
+}
+
+
 class SQLQueryHandler:
     """
     Handles SQL query generation, validation, execution, and result formatting.
@@ -131,13 +184,175 @@ class SQLQueryHandler:
 
         return "\n".join(examples)
 
+    def _normalize_query(self, query: str) -> str:
+        """
+        Normalize user query for better matching.
+
+        - Replace dashes and slashes with spaces (but keep underscores)
+        - Collapse multiple spaces into one
+        - Lowercase for comparison
+
+        Args:
+            query: Raw user query
+
+        Returns:
+            Normalized query string
+        """
+        # Replace dashes and slashes with spaces (keep underscores)
+        normalized = re.sub(r'[-/]+', ' ', query)
+
+        # Collapse multiple spaces
+        normalized = re.sub(r'\s+', ' ', normalized)
+
+        # Trim and lowercase
+        normalized = normalized.strip().lower()
+
+        logger.debug(f"Normalized query: '{query}' → '{normalized}'")
+        return normalized
+
+    def _expand_keyword(self, keyword: str) -> List[str]:
+        """
+        Expand a keyword into all its variants.
+
+        - Check TITLE_EXPANSIONS dictionary for known synonyms
+        - Add simple plural/singular variants (remove/add 's')
+        - Return unique list of expansions
+
+        Args:
+            keyword: Single keyword to expand
+
+        Returns:
+            List of keyword variants
+        """
+        keyword_lower = keyword.lower()
+        variants = set()
+
+        # Check expansion dictionary
+        if keyword_lower in TITLE_EXPANSIONS:
+            variants.update(TITLE_EXPANSIONS[keyword_lower])
+            logger.debug(f"Found expansions for '{keyword}': {TITLE_EXPANSIONS[keyword_lower]}")
+        else:
+            # Not in dictionary, add the original
+            variants.add(keyword)
+
+        # Add simple plural/singular handling
+        if keyword_lower.endswith('s') and len(keyword_lower) > 3:
+            # Try singular (remove 's')
+            singular = keyword_lower[:-1]
+            variants.add(singular)
+            variants.add(singular.capitalize())
+        elif not keyword_lower.endswith('s'):
+            # Try plural (add 's')
+            plural = keyword_lower + 's'
+            variants.add(plural)
+            variants.add(plural.capitalize())
+
+        # Always include the original casing
+        variants.add(keyword)
+
+        result = list(variants)
+        logger.debug(f"Expanded '{keyword}' to: {result}")
+        return result
+
+    def _detect_title_search(self, query: str) -> bool:
+        """
+        Detect if query is asking for someone by their job title.
+
+        Patterns:
+        - "Who is the [TITLE]"
+        - "Who is the [TITLE] of [AREA]"
+        - "Find the [TITLE]"
+
+        Args:
+            query: User's query
+
+        Returns:
+            True if this is a title-based search
+        """
+        query_lower = query.lower()
+
+        # Common patterns for title searches
+        title_patterns = [
+            r'who\s+is\s+the\s+',
+            r'find\s+the\s+',
+            r'show\s+me\s+the\s+',
+            r'get\s+the\s+',
+            r'what\s+is\s+the\s+name\s+of\s+the\s+',
+        ]
+
+        for pattern in title_patterns:
+            if re.search(pattern, query_lower):
+                logger.debug(f"Detected title search pattern: {pattern}")
+                return True
+
+        return False
+
+    def _build_smart_title_sql(self, user_query: str, normalized_query: str) -> Optional[str]:
+        """
+        Build smart SQL for title searches with keyword expansion and tiered matching.
+
+        Process:
+        1. Extract title keywords from query
+        2. Expand each keyword (synonyms + plurals)
+        3. Generate SQL with OR groups for each keyword
+        4. Require ALL keyword groups to match (strict)
+
+        Args:
+            user_query: Original user query
+            normalized_query: Normalized query
+
+        Returns:
+            SQL query string or None if can't generate
+        """
+        # Remove common question words
+        stop_words = ['who', 'is', 'the', 'of', 'for', 'a', 'an', 'in', 'at', 'to', 'find', 'show', 'me', 'get', 'what', 'name']
+        tokens = normalized_query.split()
+        keywords = [t for t in tokens if t not in stop_words and len(t) > 1]
+
+        if not keywords:
+            logger.warning("No meaningful keywords extracted from title search")
+            return None
+
+        logger.info(f"[SMART TITLE SEARCH] Extracted keywords: {keywords}")
+
+        # Expand each keyword
+        expanded_groups = []
+        for keyword in keywords:
+            variants = self._expand_keyword(keyword)
+            if variants:
+                expanded_groups.append(variants)
+
+        if not expanded_groups:
+            return None
+
+        # Build WHERE clause with OR groups
+        # Each group is OR'd (flexible), but ALL groups must match (accurate)
+        or_clauses = []
+        for group in expanded_groups:
+            # Create OR conditions for each variant in the group
+            variant_conditions = [f"BusinessTitle LIKE '%{variant}%'" for variant in group]
+            or_clause = "(" + " OR ".join(variant_conditions) + ")"
+            or_clauses.append(or_clause)
+
+        # Combine with AND (all keyword groups must match)
+        where_clause = " AND ".join(or_clauses)
+
+        # Build complete SQL
+        sql = f"SELECT TOP 1000 FirstName, LastName, BusinessTitle, HomeDept, Email, WorkPhone, BuildingCode, Room FROM vwPersonnelAll WHERE {where_clause} AND IsTerminated = 0"
+
+        logger.info(f"[TIER 1] Generated smart SQL: {sql}")
+        return sql
+
     async def generate_sql(
         self,
         user_query: str,
         conversation_context: Optional[str] = None
     ) -> Tuple[str, Dict[str, Any]]:
         """
-        Generate SQL query from natural language using LLM.
+        Generate SQL query from natural language.
+
+        Uses smart title search for "Who is the [TITLE]" queries,
+        falls back to LLM for other query types.
 
         Args:
             user_query: User's natural language query
@@ -146,6 +361,23 @@ class SQLQueryHandler:
         Returns:
             Tuple of (sql_query, metadata)
         """
+        logger.info(f"Generating SQL for query: {user_query}")
+
+        # Try smart title search first (for "Who is the [TITLE]" queries)
+        if self._detect_title_search(user_query):
+            logger.info("[SMART SEARCH] Detected title-based query")
+            normalized_query = self._normalize_query(user_query)
+            smart_sql = self._build_smart_title_sql(user_query, normalized_query)
+
+            if smart_sql:
+                logger.info(f"[SMART SEARCH] Using smart SQL generation: {smart_sql}")
+                return smart_sql, {"method": "smart_title_search", "temperature": None}
+
+            # If smart SQL generation failed, fall through to LLM
+            logger.warning("[SMART SEARCH] Failed to generate smart SQL, falling back to LLM")
+
+        # Fall back to LLM-based SQL generation
+        logger.info("[LLM FALLBACK] Using LLM for SQL generation")
         schema_context = self._build_schema_context()
         examples = self._build_example_queries()
         max_rows = self.security_config['max_rows']
