@@ -337,35 +337,52 @@ class AdvancedRAGPipeline:
                     f"(semantic={chunk.get('semantic_score', 0):.3f})"
                 )
 
-            # Step 3: Expand top semantic chunks to parents
+            # Step 3: Expand top semantic chunks to parents using existing method
+            # Extract child IDs from top semantic chunks
+            top_child_ids = [chunk['id'] for chunk in top_semantic_chunks]
+
+            # Get parent chunks for these child IDs
             parent_ids_seen = set()
             parent_results = []
 
-            for chunk in top_semantic_chunks:
-                parent_id = chunk['metadata'].get('parent_id')
+            for child_id in top_child_ids:
+                # Find the child chunk to get its parent_id
+                child_chunk = next((c for c in top_semantic_chunks if c['id'] == child_id), None)
+                if not child_chunk:
+                    continue
+
+                # Get parent_id from child metadata (field name might be 'parent_id' or 'parent_chunk_id')
+                parent_id = child_chunk['metadata'].get('parent_id') or child_chunk['metadata'].get('parent_chunk_id')
+
+                logger.debug(f"Child {child_id[:8]}... has parent_id: {parent_id}")
+
                 if parent_id and parent_id not in parent_ids_seen:
-                    # Fetch the parent chunk
-                    parent = self.document_store.parent_collection.get(
-                        ids=[parent_id],
-                        include=["documents", "metadatas"]
-                    )
+                    try:
+                        # Fetch the parent chunk
+                        parent_data = self.document_store.parent_collection.get(
+                            ids=[parent_id],
+                            include=["documents", "metadatas"]
+                        )
 
-                    if parent['ids']:
-                        parent_results.append({
-                            "id": parent['ids'][0],
-                            "text": parent['documents'][0],
-                            "metadata": parent['metadatas'][0]
-                        })
-                        parent_ids_seen.add(parent_id)
+                        if parent_data and parent_data['ids']:
+                            parent_results.append({
+                                "id": parent_data['ids'][0],
+                                "text": parent_data['documents'][0],
+                                "metadata": parent_data['metadatas'][0]
+                            })
+                            parent_ids_seen.add(parent_id)
+                            logger.debug(f"Added parent {parent_id[:8]}...")
 
-                        # Limit to parent_limit
-                        if len(parent_results) >= parent_limit:
-                            break
+                            # Limit to parent_limit
+                            if len(parent_results) >= parent_limit:
+                                break
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch parent {parent_id}: {e}")
 
             logger.info(f"Expanded to {len(parent_results)} parent chunks")
 
             if not parent_results:
-                logger.warning("No parent chunks found after reranking")
+                logger.warning(f"No parent chunks found after reranking. Child metadata keys: {list(top_semantic_chunks[0]['metadata'].keys()) if top_semantic_chunks else 'none'}")
                 return {
                     "answer": (
                         "I couldn't find relevant information about your question in the available documents.<br><br>"
