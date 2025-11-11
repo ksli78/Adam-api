@@ -166,6 +166,15 @@ class SQLQueryHandler:
             "9. Return ONLY the SQL query on a SINGLE LINE - no explanations, no markdown, no quotes, no line breaks in the SQL",
             "10. Format: SELECT TOP 1000 columns FROM table WHERE conditions",
             "\nCOMMON QUERY PATTERNS:",
+            "- 'Who is the [TITLE]' or 'Who is the [TITLE] of [DEPARTMENT/AREA]' = Search BusinessTitle field",
+            "  * CRITICAL: This is asking for a person BY THEIR JOB TITLE, not by name!",
+            "  * Parse the title words: 'director of enterprise operations' → search BusinessTitle for 'director', 'enterprise', 'operations'",
+            "  * Use multiple LIKE conditions: WHERE BusinessTitle LIKE '%director%' AND BusinessTitle LIKE '%enterprise%' AND BusinessTitle LIKE '%operations%'",
+            "  * Examples:",
+            "    - 'Who is the VP of Operations' → WHERE BusinessTitle LIKE '%VP%' AND BusinessTitle LIKE '%Operations%'",
+            "    - 'Who is the director of enterprise operations' → WHERE BusinessTitle LIKE '%director%' AND BusinessTitle LIKE '%enterprise%' AND BusinessTitle LIKE '%operations%'",
+            "    - 'Who is the Chief Technology Officer' → WHERE BusinessTitle LIKE '%Chief%' AND BusinessTitle LIKE '%Technology%' AND BusinessTitle LIKE '%Officer%'",
+            "  * Select: FirstName, LastName, BusinessTitle, HomeDept, Email, WorkPhone, BuildingCode, Room",
             "- 'department' or 'list people in/from department' or 'who works in/for DEPT-CODE' = Search HomeDept field (NOT Company!)",
             "  * Department codes like 'ENVR-001', 'ENGR-003' go in HomeDept field",
             "  * Example: WHERE HomeDept LIKE '%ENVR-001%'",
@@ -556,6 +565,14 @@ Question: "Who is Khaled's boss?"
 GOOD: "Khaled Sliman's boss is Colly Edgeworth, Senior Project Manager.\\n\\nEmail: <a href=\\"mailto:colly@acme.com\\">colly@acme.com</a>\\nPhone: <a href=\\"tel:555-1234\\">555-1234</a>"
 BAD: "Khaled Sliman's boss is:\\n\\n\\nColly Edgeworth, Senior Project Manager\\n\\n\\nContact information:\\n\\n\\nEmail..." ← Way too many blank lines!
 
+Question: "Who is the VP of Operations?"
+GOOD: "Jane Doe is the VP of Operations.\\n\\nDepartment: OPS-001\\nEmail: <a href=\\"mailto:jane.doe@company.com\\">jane.doe@company.com</a>\\nPhone: <a href=\\"tel:555-1234\\">555-1234</a>\\nBuilding: BLDG-2, Room: 201"
+BAD: "The VP of Operations is Jane Doe..." ← Use natural "[Name] is the [Title]" format!
+
+Question: "Who is the director of enterprise operations?"
+GOOD: "John Smith is the Director of Enterprise Operations.\\n\\nDepartment: ENT-OPS\\nEmail: <a href=\\"mailto:john.smith@company.com\\">john.smith@company.com</a>\\nPhone: <a href=\\"tel:555-5678\\">555-5678</a>\\nBuilding: BLDG-1, Room: 305"
+BAD: "Here is the information for the director..." ← Answer directly with name and title!
+
 Question: "List employees in Engineering"
 Answer: "<table style=\\"border-collapse: collapse; width: 100%;\\">
 <tr>
@@ -761,6 +778,14 @@ Question: "Who is Khaled's boss?"
 GOOD: "Khaled Sliman's boss is Colly Edgeworth, Senior Project Manager.\\n\\nEmail: <a href=\\"mailto:colly@acme.com\\">colly@acme.com</a>\\nPhone: <a href=\\"tel:555-1234\\">555-1234</a>"
 BAD: "Khaled Sliman's boss is:\\n\\n\\nColly Edgeworth, Senior Project Manager\\n\\n\\nContact information:\\n\\n\\nEmail..." ← Way too many blank lines!
 
+Question: "Who is the VP of Operations?"
+GOOD: "Jane Doe is the VP of Operations.\\n\\nDepartment: OPS-001\\nEmail: <a href=\\"mailto:jane.doe@company.com\\">jane.doe@company.com</a>\\nPhone: <a href=\\"tel:555-1234\\">555-1234</a>\\nBuilding: BLDG-2, Room: 201"
+BAD: "The VP of Operations is Jane Doe..." ← Use natural "[Name] is the [Title]" format!
+
+Question: "Who is the director of enterprise operations?"
+GOOD: "John Smith is the Director of Enterprise Operations.\\n\\nDepartment: ENT-OPS\\nEmail: <a href=\\"mailto:john.smith@company.com\\">john.smith@company.com</a>\\nPhone: <a href=\\"tel:555-5678\\">555-5678</a>\\nBuilding: BLDG-1, Room: 305"
+BAD: "Here is the information for the director..." ← Answer directly with name and title!
+
 FORMATTED ANSWER:"""
 
         # Calculate dynamic token limit based on number of rows
@@ -880,6 +905,137 @@ FORMATTED ANSWER:"""
             answer_parts.append(f"<br>... and {rows_returned - 10} more results")
 
         return "".join(answer_parts)
+
+    async def generate_followup_questions(
+        self,
+        user_query: str,
+        results: List[Dict[str, Any]],
+        metadata: Dict[str, Any]
+    ) -> List[str]:
+        """
+        Generate contextual follow-up questions based on the query and results.
+
+        Args:
+            user_query: Original user question
+            results: Query results
+            metadata: Query metadata (row count, etc.)
+
+        Returns:
+            List of 2-3 suggested follow-up questions
+        """
+        rows_returned = metadata['rows_returned']
+
+        # If no results, suggest alternative queries
+        if rows_returned == 0:
+            return [
+                "Try searching for a different name or title",
+                "List all employees in a specific department",
+                "Search by location or building"
+            ]
+
+        # Build context from results for more relevant suggestions
+        result_summary = []
+        for i, result in enumerate(results[:3], 1):  # Only use first 3 results for context
+            name = None
+            if 'FirstName' in result and 'LastName' in result:
+                first = result.get('FirstName', '')
+                last = result.get('LastName', '')
+                if first or last:
+                    name = f"{first} {last}".strip()
+
+            title = result.get('BusinessTitle', '')
+            dept = result.get('HomeDept', '')
+
+            summary = f"Result {i}:"
+            if name:
+                summary += f" {name}"
+            if title:
+                summary += f", {title}"
+            if dept:
+                summary += f" in {dept}"
+            result_summary.append(summary)
+
+        context_text = "\n".join(result_summary) if result_summary else "Employee information"
+
+        prompt = f"""You are helping generate follow-up questions for an employee directory query system.
+
+ORIGINAL QUESTION: {user_query}
+
+RESULTS SUMMARY:
+{context_text}
+
+Generate 2-3 natural, conversational follow-up questions that a user might want to ask based on these results.
+
+RULES:
+1. Questions should be SHORT and SPECIFIC (5-10 words max)
+2. Questions should be directly related to the people/results returned
+3. Use natural language (no overly formal phrasing)
+4. Common follow-up types:
+   - Contact information: "What is [name]'s email?" or "What is [name]'s phone number?"
+   - Location: "Where does [name] sit?" or "What building is [name] in?"
+   - Reporting structure: "Who does [name] report to?" or "Who reports to [name]?"
+   - Team information: "Who else is in [department]?" or "List [name]'s direct reports"
+   - Role details: "What is [name]'s full title?" or "When did [name] start?"
+5. If the result shows a title like "Director" or "Manager", suggest questions about their team or department
+6. Return ONLY the questions, one per line, no numbering, no explanations
+
+EXAMPLES:
+
+Original: "Find John Smith"
+Result: John Smith, Senior Engineer in ENGR-001
+Follow-ups:
+What is John Smith's email address?
+Who does John Smith report to?
+Who else is in ENGR-001?
+
+Original: "Who is the VP of Operations?"
+Result: Jane Doe, VP of Operations in OPS-001
+Follow-ups:
+Who reports to Jane Doe?
+What is Jane Doe's contact information?
+List all employees in OPS-001
+
+Original: "List employees in Engineering"
+Results: 15 employees
+Follow-ups:
+Show managers in Engineering
+Who is the director of Engineering?
+Filter by seniority level
+
+Now generate follow-up questions:"""
+
+        try:
+            response = self.ollama_client.generate(
+                model=self.model_name,
+                prompt=prompt,
+                options={
+                    "temperature": 0.7,  # Higher temperature for creative question generation
+                    "num_predict": 150
+                },
+                keep_alive=-1
+            )
+
+            # Parse response - one question per line
+            questions_text = response['response'].strip()
+            questions = [q.strip() for q in questions_text.split('\n') if q.strip()]
+
+            # Remove any numbering (1., 2., -, *)
+            questions = [re.sub(r'^[\d\.\-\*\)]+\s*', '', q) for q in questions]
+
+            # Limit to 3 questions
+            questions = questions[:3]
+
+            logger.info(f"Generated {len(questions)} follow-up questions: {questions}")
+            return questions
+
+        except Exception as e:
+            logger.error(f"Error generating follow-up questions: {e}", exc_info=True)
+            # Return generic follow-ups as fallback
+            return [
+                "View contact information",
+                "Find more employees in this department",
+                "Check reporting structure"
+            ]
 
 
 def get_sql_query_handler(database_name: str, **kwargs) -> SQLQueryHandler:
