@@ -642,6 +642,10 @@ Now provide your answer with inline citations after each point:"""
                     # Yield each token immediately
                     yield f"data: {json.dumps({'type': 'token', 'content': display_token})}\n\n"
 
+                    # Log at key milestones to verify streaming is working
+                    if token_count in [1, 10, 50, 100, 200, 300, 400, 500] or token_count % 100 == 0:
+                        logger.info(f"✓ Streamed {token_count} tokens so far...")
+
             logger.info(f"Streaming complete: generated {token_count} tokens, {len(full_answer)} characters")
 
             # Yield completion with final stats
