@@ -15,8 +15,9 @@ All processing runs locally - no 3rd party APIs required.
 import logging
 import os
 import uuid
+import json
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, AsyncGenerator
 from datetime import datetime
 
 # Fix for Windows symlink permission issue with Hugging Face Hub
@@ -38,7 +39,7 @@ import ollama
 
 # FastAPI
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 # Setup logging
@@ -449,6 +450,171 @@ class AdvancedRAGPipeline:
         except Exception as e:
             logger.error(f"Error processing query: {e}", exc_info=True)
             raise
+
+    async def query_stream(
+        self,
+        question: str,
+        top_k: int = 30,
+        parent_limit: int = 5,
+        metadata_filter: Dict[str, Any] = None,
+        temperature: float = 0.3,
+        use_hybrid: bool = True,
+        bm25_weight: float = 0.2
+    ) -> AsyncGenerator[str, None]:
+        """
+        Stream query response with real-time status updates and token-by-token LLM generation.
+
+        Yields Server-Sent Events (SSE) format messages:
+        - status: Retrieval progress updates
+        - sources: Retrieved document citations
+        - token: Individual tokens from LLM generation
+        - done: Completion signal with final stats
+        - error: Error message if something fails
+
+        Args:
+            Same as query() method
+
+        Yields:
+            SSE-formatted JSON messages
+        """
+        try:
+            # Yield initial status
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Finding relevant documents...'})}\n\n"
+
+            logger.info(f"Processing streaming query: {question[:100]}... (hybrid={use_hybrid}, bm25_weight={bm25_weight})")
+
+            # Step 1: Use hybrid search to get top 30 candidates (casts wide net)
+            child_results, _ = self.document_store.retrieve_with_parent_expansion(
+                query=question,
+                top_k=30,  # Get more candidates for reranking
+                expand_to_parents=False,  # Don't expand yet - we'll rerank first
+                metadata_filter=metadata_filter,
+                use_hybrid=use_hybrid,
+                bm25_weight=bm25_weight
+            )
+
+            # Check if we have insufficient results
+            MIN_CHUNKS_THRESHOLD = 1
+            if len(child_results) < MIN_CHUNKS_THRESHOLD:
+                logger.warning(f"Insufficient results found: {len(child_results)} child chunks")
+                yield f"data: {json.dumps({'type': 'error', 'message': 'No relevant documents found'})}\n\n"
+                return
+
+            # Step 2: SEMANTIC RERANKING - Sort by semantic score only (ignore BM25 noise)
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Analyzing document relevance...'})}\n\n"
+
+            logger.info(f"Reranking {len(child_results)} chunks by semantic similarity...")
+            child_results_reranked = sorted(child_results, key=lambda x: x.get('semantic_score', 0), reverse=True)
+
+            # Take top 5 by semantic similarity
+            SEMANTIC_TOP_K = 5
+            top_semantic_chunks = child_results_reranked[:SEMANTIC_TOP_K]
+
+            # Step 3: Expand top semantic chunks to parents
+            top_child_ids = [chunk['id'] for chunk in top_semantic_chunks]
+            parent_ids_seen = set()
+            parent_results = []
+
+            for child_id in top_child_ids:
+                child_chunk = next((c for c in top_semantic_chunks if c['id'] == child_id), None)
+                if not child_chunk:
+                    continue
+
+                parent_id = child_chunk['metadata'].get('parent_id') or child_chunk['metadata'].get('parent_chunk_id')
+
+                if parent_id and parent_id not in parent_ids_seen:
+                    try:
+                        parent_data = self.document_store.parent_collection.get(
+                            ids=[parent_id],
+                            include=["documents", "metadatas"]
+                        )
+
+                        if parent_data and parent_data['ids']:
+                            parent_results.append({
+                                "id": parent_data['ids'][0],
+                                "text": parent_data['documents'][0],
+                                "metadata": parent_data['metadatas'][0]
+                            })
+                            parent_ids_seen.add(parent_id)
+
+                            if len(parent_results) >= parent_limit:
+                                break
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch parent {parent_id}: {e}")
+
+            logger.info(f"Expanded to {len(parent_results)} parent chunks")
+
+            if not parent_results:
+                logger.warning("No parent chunks found after reranking")
+                yield f"data: {json.dumps({'type': 'error', 'message': 'No relevant information found'})}\n\n"
+                return
+
+            # Yield sources/citations before starting LLM generation
+            citations = []
+            for parent in parent_results:
+                citations.append({
+                    "document_title": parent['metadata'].get('document_title', 'Unknown'),
+                    "source_url": parent['metadata'].get('source_url', ''),
+                    "section_title": parent['metadata'].get('section_title', ''),
+                    "section_number": parent['metadata'].get('section_number', '')
+                })
+
+            yield f"data: {json.dumps({'type': 'sources', 'citations': citations})}\n\n"
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Generating answer...'})}\n\n"
+
+            # Step 4: Stream LLM response token by token
+            context = "\n\n---\n\n".join([
+                f"Document: {p['metadata'].get('document_title', 'Unknown')}\n"
+                f"Section: {p['metadata'].get('section_title', '')}\n\n"
+                f"{p['text']}"
+                for p in parent_results
+            ])
+
+            prompt = f"""You are a helpful assistant that answers questions based on the provided context documents.
+
+IMPORTANT INSTRUCTIONS:
+1. Answer the question using ONLY information from the provided context
+2. Add inline citations after EACH statement using the format (Source: Document Name - Section)
+3. If the context doesn't contain relevant information, say "I don't have information about that in the available documents"
+4. Be comprehensive but concise
+5. Organize your answer with clear structure using bullet points or numbered lists when appropriate
+
+Context Documents:
+{context}
+
+Question: {question}
+
+Now provide your answer with inline citations after each point:"""
+
+            logger.debug("Streaming LLM response...")
+
+            # Call Ollama with streaming enabled
+            response = self.ollama_client.generate(
+                model=LLM_MODEL,
+                prompt=prompt,
+                options={
+                    "temperature": temperature,
+                    "num_predict": 2000,
+                    "num_ctx": LLM_CONTEXT_WINDOW
+                },
+                stream=True  # Enable streaming!
+            )
+
+            # Stream tokens as they're generated
+            full_answer = ""
+            for chunk in response:
+                if 'response' in chunk:
+                    token = chunk['response']
+                    full_answer += token
+                    yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+
+            # Yield completion with final stats
+            logger.info("Streaming query completed successfully")
+            yield f"data: {json.dumps({'type': 'done', 'stats': {'child_chunks_retrieved': len(child_results), 'parent_chunks_used': len(parent_results), 'answer_length': len(full_answer)}})}\n\n"
+
+        except Exception as e:
+            logger.error(f"Error processing streaming query: {e}", exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
     async def query_with_llm_selection(
         self,
@@ -955,6 +1121,79 @@ async def query(request: QueryRequest):
     except Exception as e:
         logger.error(f"Error processing query: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/query-stream")
+async def query_stream(request: QueryRequest):
+    """
+    Stream query response with real-time token generation.
+
+    Returns Server-Sent Events (SSE) with the following message types:
+
+    1. status: Progress updates during retrieval
+       {"type": "status", "message": "Finding relevant documents..."}
+
+    2. sources: Document citations found
+       {"type": "sources", "citations": [{document_title, section_title, ...}]}
+
+    3. token: Individual tokens from LLM as they're generated
+       {"type": "token", "content": "word"}
+
+    4. done: Completion signal with stats
+       {"type": "done", "stats": {child_chunks_retrieved, parent_chunks_used, answer_length}}
+
+    5. error: Error message if something fails
+       {"type": "error", "message": "Error description"}
+
+    Benefits over /query endpoint:
+    - Users see response immediately as it's generated
+    - Perceived speed improvement (feels 3x faster)
+    - Professional UX like ChatGPT
+    - Same quality as regular endpoint (2000 tokens, 5 parent chunks)
+
+    Client Example (JavaScript):
+        const eventSource = new EventSource('/query-stream', {
+            method: 'POST',
+            body: JSON.stringify({prompt: "What is the PTO policy?"})
+        });
+
+        eventSource.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.type === 'token') {
+                appendToAnswer(data.content);
+            } else if (data.type === 'sources') {
+                displayCitations(data.citations);
+            } else if (data.type === 'done') {
+                eventSource.close();
+            }
+        };
+    """
+    try:
+        logger.info("Using streaming query mode")
+
+        # Generate streaming response
+        return StreamingResponse(
+            rag_pipeline.query_stream(
+                question=request.prompt,
+                top_k=request.top_k,
+                parent_limit=request.parent_limit,
+                metadata_filter=request.metadata_filter,
+                temperature=request.temperature,
+                use_hybrid=request.use_hybrid,
+                bm25_weight=request.bm25_weight
+            ),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"  # Disable nginx buffering
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Error processing streaming query: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @app.get("/documents")
