@@ -7,6 +7,8 @@ Demonstrates how to consume Server-Sent Events (SSE) from /query-stream endpoint
 import requests
 import json
 import sys
+import time
+from datetime import datetime
 
 
 def test_streaming_query(question: str, api_url: str = "http://localhost:8000"):
@@ -34,9 +36,15 @@ def test_streaming_query(question: str, api_url: str = "http://localhost:8000"):
     url = f"{api_url}/query-stream"
 
     try:
+        print(f"\n[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Sending request...")
+        start_time = time.time()
+        first_token_time = None
+        token_count = 0
+
         with requests.post(url, json=payload, stream=True, timeout=120) as response:
             response.raise_for_status()
 
+            print(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Connected, waiting for stream...\n")
             print("\nStreaming response:\n")
             answer_text = ""
             citations = []
@@ -65,6 +73,18 @@ def test_streaming_query(question: str, api_url: str = "http://localhost:8000"):
                                 print("\n[ANSWER] ", end="", flush=True)
 
                             elif msg_type == 'token':
+                                # Track first token arrival time
+                                if first_token_time is None:
+                                    first_token_time = time.time()
+                                    elapsed = first_token_time - start_time
+                                    print(f"[FIRST TOKEN at {elapsed:.2f}s] ", end="", flush=True)
+
+                                # Log every 10th token to show streaming is working
+                                token_count += 1
+                                if token_count <= 5 or token_count % 20 == 0:
+                                    elapsed = time.time() - start_time
+                                    print(f"\n[TOKEN #{token_count} at {elapsed:.2f}s] ", end="", flush=True)
+
                                 # Print token without newline to show streaming effect
                                 token = data['content']
                                 answer_text += token

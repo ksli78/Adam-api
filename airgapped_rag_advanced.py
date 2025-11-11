@@ -16,6 +16,8 @@ import logging
 import os
 import uuid
 import json
+import sys
+import asyncio
 from pathlib import Path
 from typing import List, Dict, Any, Optional, AsyncGenerator
 from datetime import datetime
@@ -489,10 +491,11 @@ class AdvancedRAGPipeline:
             SSE-formatted JSON messages
         """
         try:
-            # Yield initial status
-            yield f"data: {json.dumps({'type': 'status', 'message': 'Finding relevant documents...'})}\n\n"
+            logger.info(f"[STREAM START] Processing streaming query: {question[:100]}...")
 
-            logger.info(f"Processing streaming query: {question[:100]}... (hybrid={use_hybrid}, bm25_weight={bm25_weight})")
+            # Yield initial status - CRITICAL: await asyncio.sleep(0) after EVERY yield to flush
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Finding relevant documents...'})}\n\n"
+            await asyncio.sleep(0)  # Force async event loop to flush to client
 
             # Step 1: Use hybrid search to get top 30 candidates (casts wide net)
             child_results, _ = self.document_store.retrieve_with_parent_expansion(
@@ -509,10 +512,12 @@ class AdvancedRAGPipeline:
             if len(child_results) < MIN_CHUNKS_THRESHOLD:
                 logger.warning(f"Insufficient results found: {len(child_results)} child chunks")
                 yield f"data: {json.dumps({'type': 'error', 'message': 'No relevant documents found'})}\n\n"
+                await asyncio.sleep(0)
                 return
 
             # Step 2: SEMANTIC RERANKING - Sort by semantic score only (ignore BM25 noise)
             yield f"data: {json.dumps({'type': 'status', 'message': 'Analyzing document relevance...'})}\n\n"
+            await asyncio.sleep(0)
 
             logger.info(f"Reranking {len(child_results)} chunks by semantic similarity...")
             child_results_reranked = sorted(child_results, key=lambda x: x.get('semantic_score', 0), reverse=True)
@@ -558,6 +563,7 @@ class AdvancedRAGPipeline:
             if not parent_results:
                 logger.warning("No parent chunks found after reranking")
                 yield f"data: {json.dumps({'type': 'error', 'message': 'No relevant information found'})}\n\n"
+                await asyncio.sleep(0)
                 return
 
             # Build context from parent chunks (MUST include URLs for inline citations!)
@@ -585,7 +591,9 @@ class AdvancedRAGPipeline:
                 })
 
             yield f"data: {json.dumps({'type': 'sources', 'citations': citations})}\n\n"
+            await asyncio.sleep(0)
             yield f"data: {json.dumps({'type': 'status', 'message': 'Generating answer...'})}\n\n"
+            await asyncio.sleep(0)
 
             # Step 4: Stream LLM response token by token
             # Use EXACT SAME PROMPT as regular endpoint for consistent quality
@@ -629,6 +637,8 @@ Now provide your answer with inline citations after each point:"""
             full_answer = ""
             token_count = 0
 
+            logger.info("[STREAM] Starting LLM token generation...")
+
             for chunk in response:
                 # Access response attribute directly (chunk is GenerateResponse object, not dict)
                 if hasattr(chunk, 'response') and chunk.response:
@@ -639,17 +649,28 @@ Now provide your answer with inline citations after each point:"""
                     # Replace newlines with <br> for HTML display (same as regular endpoint)
                     display_token = token.replace('\n', '<br>')
 
-                    # Yield each token immediately
-                    yield f"data: {json.dumps({'type': 'token', 'content': display_token})}\n\n"
+                    # DEBUG: Log first 5 tokens and every 50th token to verify streaming
+                    if token_count <= 5 or token_count % 50 == 0:
+                        logger.info(f"[STREAM] Token #{token_count}: {repr(token[:30])}")
 
-            logger.info(f"Streaming complete: generated {token_count} tokens, {len(full_answer)} characters")
+                    # CRITICAL: Yield token and immediately yield control to event loop
+                    yield f"data: {json.dumps({'type': 'token', 'content': display_token})}\n\n"
+                    await asyncio.sleep(0)  # THIS IS THE KEY - yields control and flushes to client!
+
+            logger.info(f"[STREAM COMPLETE] Generated {token_count} tokens, {len(full_answer)} characters")
 
             # Yield completion with final stats
             yield f"data: {json.dumps({'type': 'done', 'stats': {'child_chunks_retrieved': len(child_results), 'parent_chunks_used': len(parent_results), 'answer_length': len(full_answer), 'tokens_streamed': token_count}})}\n\n"
+            await asyncio.sleep(0)
+
+            logger.info("[STREAM END] Generator exiting normally")
+            # Generator will naturally close after this return
 
         except Exception as e:
-            logger.error(f"Error processing streaming query: {e}", exc_info=True)
+            logger.error(f"[STREAM ERROR] {e}", exc_info=True)
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            await asyncio.sleep(0)
+            logger.info("[STREAM END] Generator exiting after error")
 
     async def query_with_llm_selection(
         self,
@@ -1159,7 +1180,7 @@ async def query(request: QueryRequest):
 
 
 @app.post("/query-stream")
-async def query_stream(request: QueryRequest):
+async def query_stream_endpoint(request: QueryRequest):
     """
     Stream query response with real-time token generation.
 
@@ -1204,7 +1225,7 @@ async def query_stream(request: QueryRequest):
         };
     """
     try:
-        logger.info("Using streaming query mode")
+        logger.info(f"[ENDPOINT CALLED] /query-stream endpoint invoked for query: {request.prompt[:100]}")
 
         # Generate streaming response
         return StreamingResponse(
@@ -1221,7 +1242,8 @@ async def query_stream(request: QueryRequest):
             headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"  # Disable nginx buffering
+                "X-Accel-Buffering": "no",  # CRITICAL: Disable nginx buffering
+                # Note: Transfer-Encoding is set automatically by FastAPI/Starlette
             }
         )
 
