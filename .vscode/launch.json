@@ -20,7 +20,7 @@
         "HF_HOME": "${workspaceFolder}\\.hf",
         "EMPLOYEE_DB_PASSWORD":"123456",
         "OLLAMA_HOST" : "http://adam.amentumspacemissions.com:11434",
-        "LLM_MODEL":"llama3.1:70b"
+        "LLM_MODEL":"mistral-small:22b"
       },
       "console": "integratedTerminal",
       "justMyCode": true
