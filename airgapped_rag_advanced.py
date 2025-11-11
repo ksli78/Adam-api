@@ -39,6 +39,7 @@ import ollama
 
 # FastAPI
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -73,6 +74,16 @@ app = FastAPI(
     title="Advanced Air-Gapped RAG API",
     description="Production RAG with semantic chunking, metadata extraction, and parent-child retrieval",
     version="2.0.0"
+)
+
+# Add CORS middleware to allow cross-origin requests
+# This is needed for the HTML demo page and frontend applications
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins (restrict this in production to specific domains)
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods (GET, POST, OPTIONS, etc.)
+    allow_headers=["*"],  # Allow all headers
 )
 
 # Include SQL query routes
