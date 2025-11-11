@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG Streaming Demo</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            max-width: 900px;
+            margin: 40px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 30px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+        }
+        .input-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: #333;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 4px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        button:hover:not(:disabled) {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-top: 20px;
+            padding: 12px;
+            background-color: #e7f3ff;
+            border-left: 4px solid #007bff;
+            border-radius: 4px;
+            display: none;
+        }
+        .status.active {
+            display: block;
+        }
+        .status.error {
+            background-color: #ffe7e7;
+            border-left-color: #dc3545;
+        }
+        .citations {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+            display: none;
+        }
+        .citations.active {
+            display: block;
+        }
+        .citations h3 {
+            margin-top: 0;
+            color: #333;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .citation {
+            margin: 8px 0;
+            padding: 8px;
+            background-color: white;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        .citation-title {
+            font-weight: 500;
+            color: #007bff;
+        }
+        .answer {
+            margin-top: 20px;
+            padding: 20px;
+            background-color: #fff;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            min-height: 100px;
+            white-space: pre-wrap;
+            line-height: 1.6;
+            display: none;
+        }
+        .answer.active {
+            display: block;
+        }
+        .stats {
+            margin-top: 15px;
+            padding: 10px;
+            background-color: #e7f3ff;
+            border-radius: 4px;
+            font-size: 13px;
+            color: #666;
+            display: none;
+        }
+        .stats.active {
+            display: block;
+        }
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 3px solid rgba(255,255,255,.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s ease-in-out infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 RAG Streaming Demo</h1>
+        <p class="subtitle">Real-time AI responses with document citations</p>
+
+        <div class="input-group">
+            <label for="question">Ask a question:</label>
+            <input type="text" id="question" placeholder="What is the PTO policy?" value="What is the PTO policy?">
+        </div>
+
+        <button id="askBtn" onclick="askQuestion()">Ask Question</button>
+
+        <div id="status" class="status"></div>
+
+        <div id="citations" class="citations">
+            <h3>📚 Source Documents:</h3>
+            <div id="citationsList"></div>
+        </div>
+
+        <div id="answer" class="answer"></div>
+
+        <div id="stats" class="stats"></div>
+    </div>
+
+    <script>
+        let currentEventSource = null;
+
+        function askQuestion() {
+            const question = document.getElementById('question').value.trim();
+            if (!question) {
+                alert('Please enter a question');
+                return;
+            }
+
+            // Disable button and reset UI
+            const askBtn = document.getElementById('askBtn');
+            askBtn.disabled = true;
+            askBtn.innerHTML = '<span class="spinner"></span> Thinking...';
+
+            resetUI();
+            showStatus('Sending request...');
+
+            // Close any existing connection
+            if (currentEventSource) {
+                currentEventSource.close();
+            }
+
+            // Prepare request
+            const payload = {
+                prompt: question,
+                top_k: 30,
+                parent_limit: 5,
+                temperature: 0.3,
+                use_hybrid: true,
+                bm25_weight: 0.2
+            };
+
+            // Make POST request and handle SSE stream
+            fetch('http://localhost:8000/query-stream', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(payload)
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.body;
+            })
+            .then(body => {
+                const reader = body.getReader();
+                const decoder = new TextDecoder();
+
+                function readStream() {
+                    reader.read().then(({done, value}) => {
+                        if (done) {
+                            console.log('Stream complete');
+                            askBtn.disabled = false;
+                            askBtn.innerHTML = 'Ask Question';
+                            return;
+                        }
+
+                        // Decode chunk and process SSE messages
+                        const chunk = decoder.decode(value, {stream: true});
+                        const lines = chunk.split('\n');
+
+                        for (const line of lines) {
+                            if (line.startsWith('data: ')) {
+                                const dataJson = line.substring(6);
+                                try {
+                                    const data = JSON.parse(dataJson);
+                                    handleSSEMessage(data);
+                                } catch (e) {
+                                    console.error('Failed to parse SSE data:', e);
+                                }
+                            }
+                        }
+
+                        // Continue reading
+                        readStream();
+                    });
+                }
+
+                readStream();
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                showStatus('Error: ' + error.message, true);
+                askBtn.disabled = false;
+                askBtn.innerHTML = 'Ask Question';
+            });
+        }
+
+        function handleSSEMessage(data) {
+            const type = data.type;
+
+            if (type === 'status') {
+                showStatus(data.message);
+            } else if (type === 'sources') {
+                displayCitations(data.citations);
+            } else if (type === 'token') {
+                appendToAnswer(data.content);
+            } else if (type === 'done') {
+                hideStatus();
+                displayStats(data.stats);
+            } else if (type === 'error') {
+                showStatus('Error: ' + data.message, true);
+                document.getElementById('askBtn').disabled = false;
+                document.getElementById('askBtn').innerHTML = 'Ask Question';
+            }
+        }
+
+        function resetUI() {
+            document.getElementById('status').classList.remove('active', 'error');
+            document.getElementById('citations').classList.remove('active');
+            document.getElementById('answer').classList.remove('active');
+            document.getElementById('answer').textContent = '';
+            document.getElementById('citationsList').innerHTML = '';
+            document.getElementById('stats').classList.remove('active');
+        }
+
+        function showStatus(message, isError = false) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = message;
+            statusDiv.classList.add('active');
+            if (isError) {
+                statusDiv.classList.add('error');
+            } else {
+                statusDiv.classList.remove('error');
+            }
+        }
+
+        function hideStatus() {
+            document.getElementById('status').classList.remove('active');
+        }
+
+        function displayCitations(citations) {
+            const citationsDiv = document.getElementById('citations');
+            const citationsList = document.getElementById('citationsList');
+
+            citationsList.innerHTML = '';
+            citations.forEach((cite, index) => {
+                const citeDiv = document.createElement('div');
+                citeDiv.className = 'citation';
+                citeDiv.innerHTML = `
+                    <span class="citation-title">${index + 1}. ${cite.document_title}</span>
+                    ${cite.section_title ? `<br><span style="color: #666;">Section: ${cite.section_title}</span>` : ''}
+                `;
+                citationsList.appendChild(citeDiv);
+            });
+
+            citationsDiv.classList.add('active');
+        }
+
+        function appendToAnswer(token) {
+            const answerDiv = document.getElementById('answer');
+            answerDiv.classList.add('active');
+            answerDiv.textContent += token;
+            // Auto-scroll to bottom
+            answerDiv.scrollTop = answerDiv.scrollHeight;
+        }
+
+        function displayStats(stats) {
+            const statsDiv = document.getElementById('stats');
+            statsDiv.innerHTML = `
+                ✓ Retrieved ${stats.child_chunks_retrieved} candidate chunks<br>
+                ✓ Used ${stats.parent_chunks_used} parent documents<br>
+                ✓ Generated ${stats.answer_length} character answer
+            `;
+            statsDiv.classList.add('active');
+        }
+
+        // Allow Enter key to submit
+        document.getElementById('question').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                askQuestion();
+            }
+        });
+    </script>
+</body>
+</html>
