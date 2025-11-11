@@ -16,6 +16,7 @@ import logging
 import os
 import uuid
 import json
+import sys
 from pathlib import Path
 from typing import List, Dict, Any, Optional, AsyncGenerator
 from datetime import datetime
@@ -489,8 +490,14 @@ class AdvancedRAGPipeline:
             SSE-formatted JSON messages
         """
         try:
+            # CRITICAL: Send initial ping to establish connection immediately
+            # This ensures the stream starts flowing right away
+            yield ": ping\n\n"
+            sys.stdout.flush()  # Force flush to ensure immediate delivery
+
             # Yield initial status
             yield f"data: {json.dumps({'type': 'status', 'message': 'Finding relevant documents...'})}\n\n"
+            sys.stdout.flush()  # Flush after each yield
 
             logger.info(f"Processing streaming query: {question[:100]}... (hybrid={use_hybrid}, bm25_weight={bm25_weight})")
 
@@ -509,10 +516,12 @@ class AdvancedRAGPipeline:
             if len(child_results) < MIN_CHUNKS_THRESHOLD:
                 logger.warning(f"Insufficient results found: {len(child_results)} child chunks")
                 yield f"data: {json.dumps({'type': 'error', 'message': 'No relevant documents found'})}\n\n"
+                sys.stdout.flush()
                 return
 
             # Step 2: SEMANTIC RERANKING - Sort by semantic score only (ignore BM25 noise)
             yield f"data: {json.dumps({'type': 'status', 'message': 'Analyzing document relevance...'})}\n\n"
+            sys.stdout.flush()
 
             logger.info(f"Reranking {len(child_results)} chunks by semantic similarity...")
             child_results_reranked = sorted(child_results, key=lambda x: x.get('semantic_score', 0), reverse=True)
@@ -558,6 +567,7 @@ class AdvancedRAGPipeline:
             if not parent_results:
                 logger.warning("No parent chunks found after reranking")
                 yield f"data: {json.dumps({'type': 'error', 'message': 'No relevant information found'})}\n\n"
+                sys.stdout.flush()
                 return
 
             # Build context from parent chunks (MUST include URLs for inline citations!)
@@ -585,7 +595,9 @@ class AdvancedRAGPipeline:
                 })
 
             yield f"data: {json.dumps({'type': 'sources', 'citations': citations})}\n\n"
+            sys.stdout.flush()
             yield f"data: {json.dumps({'type': 'status', 'message': 'Generating answer...'})}\n\n"
+            sys.stdout.flush()
 
             # Step 4: Stream LLM response token by token
             # Use EXACT SAME PROMPT as regular endpoint for consistent quality
@@ -639,17 +651,24 @@ Now provide your answer with inline citations after each point:"""
                     # Replace newlines with <br> for HTML display (same as regular endpoint)
                     display_token = token.replace('\n', '<br>')
 
-                    # Yield each token immediately
+                    # DEBUG: Log every 10th token to verify streaming is happening
+                    if token_count <= 5 or token_count % 10 == 0:
+                        print(f"[{datetime.now()}] PYTHON YIELDING TOKEN #{token_count}: {repr(token[:50])}", flush=True)
+
+                    # CRITICAL: Yield each token immediately with explicit flush
                     yield f"data: {json.dumps({'type': 'token', 'content': display_token})}\n\n"
+                    sys.stdout.flush()  # Force immediate delivery - THIS IS CRITICAL!
 
             logger.info(f"Streaming complete: generated {token_count} tokens, {len(full_answer)} characters")
 
             # Yield completion with final stats
             yield f"data: {json.dumps({'type': 'done', 'stats': {'child_chunks_retrieved': len(child_results), 'parent_chunks_used': len(parent_results), 'answer_length': len(full_answer), 'tokens_streamed': token_count}})}\n\n"
+            sys.stdout.flush()
 
         except Exception as e:
             logger.error(f"Error processing streaming query: {e}", exc_info=True)
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            sys.stdout.flush()
 
     async def query_with_llm_selection(
         self,
@@ -1221,7 +1240,8 @@ async def query_stream(request: QueryRequest):
             headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"  # Disable nginx buffering
+                "X-Accel-Buffering": "no",  # CRITICAL: Disable nginx buffering
+                "Transfer-Encoding": "chunked",  # Enable chunked transfer encoding
             }
         )
 

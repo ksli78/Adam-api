@@ -6,8 +6,14 @@ Simple wrapper to run the advanced RAG API with proper configuration.
 
 import uvicorn
 import os
+import sys
 
 if __name__ == "__main__":
+    # CRITICAL: Force unbuffered output for streaming responses
+    # This ensures SSE events are sent immediately, not buffered
+    os.environ["PYTHONUNBUFFERED"] = "1"
+    sys.stdout.reconfigure(line_buffering=False)
+
     # Set environment variables if not already set
     os.environ.setdefault("DATA_DIR", "/data/airgapped_rag")
     os.environ.setdefault("OLLAMA_HOST", "http://localhost:11434")
