@@ -612,7 +612,6 @@ CITATION EXAMPLE:
 Now provide your answer with inline citations after each point:"""
 
             logger.info("Starting LLM streaming generation...")
-            logger.info("Calling Ollama API with stream=True...")
 
             # Call Ollama with streaming enabled
             response = self.ollama_client.generate(
@@ -623,23 +622,14 @@ Now provide your answer with inline citations after each point:"""
                     "num_predict": 2000,
                     "num_ctx": LLM_CONTEXT_WINDOW
                 },
-                stream=True  # Enable streaming!
+                stream=True
             )
-
-            logger.info("Ollama stream started, beginning iteration...")
 
             # Stream tokens as they're generated
             full_answer = ""
             token_count = 0
-            chunk_count = 0
 
             for chunk in response:
-                chunk_count += 1
-
-                # Log EVERY chunk to debug buffering issue (chunk is a Pydantic GenerateResponse object)
-                if chunk_count <= 5 or chunk_count % 10 == 0:
-                    logger.info(f"Received chunk #{chunk_count}: done={getattr(chunk, 'done', None)}, has_response={hasattr(chunk, 'response')}")
-
                 # Access response attribute directly (chunk is GenerateResponse object, not dict)
                 if hasattr(chunk, 'response') and chunk.response:
                     token = chunk.response
@@ -652,11 +642,7 @@ Now provide your answer with inline citations after each point:"""
                     # Yield each token immediately
                     yield f"data: {json.dumps({'type': 'token', 'content': display_token})}\n\n"
 
-                    # Log frequently to verify streaming is working
-                    if token_count in [1, 5, 10, 20, 50, 100] or token_count % 50 == 0:
-                        logger.info(f"✓ Streamed {token_count} tokens so far (chunk #{chunk_count})...")
-
-            logger.info(f"Streaming complete: generated {token_count} tokens in {chunk_count} chunks, {len(full_answer)} characters")
+            logger.info(f"Streaming complete: generated {token_count} tokens, {len(full_answer)} characters")
 
             # Yield completion with final stats
             yield f"data: {json.dumps({'type': 'done', 'stats': {'child_chunks_retrieved': len(child_results), 'parent_chunks_used': len(parent_results), 'answer_length': len(full_answer), 'tokens_streamed': token_count}})}\n\n"
