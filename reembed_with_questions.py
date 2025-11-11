@@ -97,7 +97,8 @@ def reembed_all_documents():
         store.child_collection.update(
             ids=child_chunks['ids'],
             documents=augmented_texts,  # Update stored text
-            embeddings=[emb.tolist() for emb in new_embeddings]  # Update embeddings
+            embeddings=[emb.tolist() for emb in new_embeddings],  # Update embeddings
+            metadatas=child_chunks['metadatas']  # CRITICAL: Preserve metadata including parent_chunk_id!
         )
 
         total_chunks_updated += num_chunks
