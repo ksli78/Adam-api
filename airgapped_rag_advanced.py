@@ -560,44 +560,58 @@ class AdvancedRAGPipeline:
                 yield f"data: {json.dumps({'type': 'error', 'message': 'No relevant information found'})}\n\n"
                 return
 
-            # Yield sources/citations before starting LLM generation
+            # Build context from parent chunks (MUST include URLs for inline citations!)
+            context_parts = []
+            for i, parent in enumerate(parent_results, 1):
+                context_parts.append(
+                    f"[Document {i}]\n"
+                    f"Title: {parent['metadata'].get('document_title', 'Unknown')}\n"
+                    f"URL: {parent['metadata'].get('source_url', '')}\n"
+                    f"Section: {parent['metadata'].get('section_title', 'Unknown')}\n"
+                    f"Content:\n{parent['text']}\n"
+                )
+
+            context = "\n\n---\n\n".join(context_parts)
+
+            # Build citations (include source_url for clickable links)
             citations = []
             for parent in parent_results:
                 citations.append({
-                    "document_title": parent['metadata'].get('document_title', 'Unknown'),
                     "source_url": parent['metadata'].get('source_url', ''),
+                    "document_title": parent['metadata'].get('document_title', 'Unknown'),
                     "section_title": parent['metadata'].get('section_title', ''),
-                    "section_number": parent['metadata'].get('section_number', '')
+                    "section_number": parent['metadata'].get('section_number', ''),
+                    "excerpt": parent['text'][:500] + "..." if len(parent['text']) > 500 else parent['text']
                 })
 
             yield f"data: {json.dumps({'type': 'sources', 'citations': citations})}\n\n"
             yield f"data: {json.dumps({'type': 'status', 'message': 'Generating answer...'})}\n\n"
 
             # Step 4: Stream LLM response token by token
-            context = "\n\n---\n\n".join([
-                f"Document: {p['metadata'].get('document_title', 'Unknown')}\n"
-                f"Section: {p['metadata'].get('section_title', '')}\n\n"
-                f"{p['text']}"
-                for p in parent_results
-            ])
+            # Use EXACT SAME PROMPT as regular endpoint for consistent quality
+            prompt = f"""Answer the following question using ONLY the information from the documents provided below.
 
-            prompt = f"""You are a helpful assistant that answers questions based on the provided context documents.
+QUESTION:
+{question}
 
-IMPORTANT INSTRUCTIONS:
-1. Answer the question using ONLY information from the provided context
-2. Add inline citations after EACH statement using the format (Source: Document Name - Section)
-3. If the context doesn't contain relevant information, say "I don't have information about that in the available documents"
-4. Be comprehensive but concise
-5. Organize your answer with clear structure using bullet points or numbered lists when appropriate
-
-Context Documents:
+DOCUMENTS:
 {context}
 
-Question: {question}
+INSTRUCTIONS:
+- Provide a direct, helpful answer to the question
+- Use information ONLY from the documents above
+- Include specific details (section numbers, dates, amounts) when relevant
+- IMPORTANT: Add inline citations after EACH claim or bullet point using this format: (<span><a href="URL">FileName.pdf</a></span>)
+- Place citations immediately after the relevant statement, before the period
+- If information is missing, clearly state what cannot be answered
+
+CITATION EXAMPLE:
+✓ CORRECT: "Employees must submit requests via the Decisions tool (<span><a href="https://...">EN-PO-0301.pdf</a></span>)."
+✗ WRONG: "Employees must submit requests via the Decisions tool. For more details, see EN-PO-0301.pdf."
 
 Now provide your answer with inline citations after each point:"""
 
-            logger.debug("Streaming LLM response...")
+            logger.info("Starting LLM streaming generation...")
 
             # Call Ollama with streaming enabled
             response = self.ollama_client.generate(
@@ -613,15 +627,28 @@ Now provide your answer with inline citations after each point:"""
 
             # Stream tokens as they're generated
             full_answer = ""
+            token_count = 0
+
             for chunk in response:
                 if 'response' in chunk:
                     token = chunk['response']
                     full_answer += token
-                    yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+                    token_count += 1
+
+                    # Replace newlines with <br> for HTML display (same as regular endpoint)
+                    display_token = token.replace('\n', '<br>')
+
+                    # Yield each token immediately
+                    yield f"data: {json.dumps({'type': 'token', 'content': display_token})}\n\n"
+
+                    # Log every 20 tokens to verify streaming is working
+                    if token_count % 20 == 0:
+                        logger.debug(f"Streamed {token_count} tokens so far...")
+
+            logger.info(f"Streaming complete: generated {token_count} tokens, {len(full_answer)} characters")
 
             # Yield completion with final stats
-            logger.info("Streaming query completed successfully")
-            yield f"data: {json.dumps({'type': 'done', 'stats': {'child_chunks_retrieved': len(child_results), 'parent_chunks_used': len(parent_results), 'answer_length': len(full_answer)}})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'stats': {'child_chunks_retrieved': len(child_results), 'parent_chunks_used': len(parent_results), 'answer_length': len(full_answer), 'tokens_streamed': token_count}})}\n\n"
 
         except Exception as e:
             logger.error(f"Error processing streaming query: {e}", exc_info=True)

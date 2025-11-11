@@ -109,12 +109,18 @@
             border: 1px solid #ddd;
             border-radius: 4px;
             min-height: 100px;
-            white-space: pre-wrap;
             line-height: 1.6;
             display: none;
         }
         .answer.active {
             display: block;
+        }
+        .answer a {
+            color: #007bff;
+            text-decoration: none;
+        }
+        .answer a:hover {
+            text-decoration: underline;
         }
         .stats {
             margin-top: 15px;
@@ -280,7 +286,7 @@
             document.getElementById('status').classList.remove('active', 'error');
             document.getElementById('citations').classList.remove('active');
             document.getElementById('answer').classList.remove('active');
-            document.getElementById('answer').textContent = '';
+            document.getElementById('answer').innerHTML = '';  // Use innerHTML to clear HTML content
             document.getElementById('citationsList').innerHTML = '';
             document.getElementById('stats').classList.remove('active');
         }
@@ -308,8 +314,14 @@
             citations.forEach((cite, index) => {
                 const citeDiv = document.createElement('div');
                 citeDiv.className = 'citation';
+
+                // Create clickable link if source_url is available
+                const titleDisplay = cite.source_url
+                    ? `<a href="${cite.source_url}" target="_blank" class="citation-title">${index + 1}. ${cite.document_title}</a>`
+                    : `<span class="citation-title">${index + 1}. ${cite.document_title}</span>`;
+
                 citeDiv.innerHTML = `
-                    <span class="citation-title">${index + 1}. ${cite.document_title}</span>
+                    ${titleDisplay}
                     ${cite.section_title ? `<br><span style="color: #666;">Section: ${cite.section_title}</span>` : ''}
                 `;
                 citationsList.appendChild(citeDiv);
@@ -321,17 +333,19 @@
         function appendToAnswer(token) {
             const answerDiv = document.getElementById('answer');
             answerDiv.classList.add('active');
-            answerDiv.textContent += token;
+            // Use innerHTML to render HTML tags (<br>, <a>, etc.)
+            answerDiv.innerHTML += token;
             // Auto-scroll to bottom
             answerDiv.scrollTop = answerDiv.scrollHeight;
         }
 
         function displayStats(stats) {
             const statsDiv = document.getElementById('stats');
+            const tokensInfo = stats.tokens_streamed ? `<br>✓ Streamed ${stats.tokens_streamed} tokens in real-time` : '';
             statsDiv.innerHTML = `
                 ✓ Retrieved ${stats.child_chunks_retrieved} candidate chunks<br>
                 ✓ Used ${stats.parent_chunks_used} parent documents<br>
-                ✓ Generated ${stats.answer_length} character answer
+                ✓ Generated ${stats.answer_length} character answer${tokensInfo}
             `;
             statsDiv.classList.add('active');
         }
