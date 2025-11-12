@@ -434,16 +434,39 @@ class AdvancedRAGPipeline:
             # Replace newlines with HTML line breaks for better display
             answer = answer.replace('\n', '<br>')
 
-            # Build citations
-            citations = []
+            # Build all potential citations
+            all_citations = []
             for parent in parent_results:
-                citations.append({
+                all_citations.append({
                     "source_url": parent['metadata'].get('source_url', ''),
                     "document_title": parent['metadata'].get('document_title', 'Unknown'),
                     "section_title": parent['metadata'].get('section_title', ''),
                     "section_number": parent['metadata'].get('section_number', ''),
                     "excerpt": parent['text'][:500] + "..." if len(parent['text']) > 500 else parent['text']
                 })
+
+            # Extract which documents were actually cited in the answer
+            # Citations are in format: (<span><a href="URL">FileName.pdf</a></span>)
+            import re
+            cited_filenames = set()
+            citation_pattern = r'<a href="[^"]*">([^<]+\.pdf)</a>'
+            matches = re.findall(citation_pattern, answer)
+            for filename in matches:
+                cited_filenames.add(filename)
+
+            logger.info(f"[CITATIONS] Found {len(cited_filenames)} unique documents cited in answer: {cited_filenames}")
+
+            # Filter citations to only include documents that were actually cited
+            if cited_filenames:
+                citations = [
+                    citation for citation in all_citations
+                    if citation['document_title'] in cited_filenames
+                ]
+                logger.info(f"[CITATIONS] Filtered from {len(all_citations)} to {len(citations)} citations")
+            else:
+                # If no citations found in answer (shouldn't happen but fallback), use all
+                logger.warning("[CITATIONS] No citations found in answer, using all retrieved documents")
+                citations = all_citations
 
             result = {
                 "answer": answer,
@@ -579,10 +602,11 @@ class AdvancedRAGPipeline:
 
             context = "\n\n---\n\n".join(context_parts)
 
-            # Build citations (include source_url for clickable links)
-            citations = []
+            # Build ALL potential citations (from all parent chunks)
+            # We'll filter these later to only include documents actually cited in the answer
+            all_citations = []
             for parent in parent_results:
-                citations.append({
+                all_citations.append({
                     "source_url": parent['metadata'].get('source_url', ''),
                     "document_title": parent['metadata'].get('document_title', 'Unknown'),
                     "section_title": parent['metadata'].get('section_title', ''),
@@ -590,8 +614,7 @@ class AdvancedRAGPipeline:
                     "excerpt": parent['text'][:500] + "..." if len(parent['text']) > 500 else parent['text']
                 })
 
-            yield f"data: {json.dumps({'type': 'sources', 'citations': citations})}\n\n"
-            await asyncio.sleep(0)
+            # Don't send citations yet - wait until after answer is generated so we can filter
             yield f"data: {json.dumps({'type': 'status', 'message': 'Generating answer...'})}\n\n"
             await asyncio.sleep(0)
 
@@ -659,11 +682,39 @@ Now provide your answer with inline citations after each point:"""
 
             logger.info(f"[STREAM COMPLETE] Generated {token_count} tokens, {len(full_answer)} characters")
 
+            # Extract which documents were actually cited in the answer
+            # Citations are in format: (<span><a href="URL">FileName.pdf</a></span>)
+            import re
+            cited_filenames = set()
+            # Pattern to extract filenames from inline citations
+            citation_pattern = r'<a href="[^"]*">([^<]+\.pdf)</a>'
+            matches = re.findall(citation_pattern, full_answer)
+            for filename in matches:
+                cited_filenames.add(filename)
+
+            logger.info(f"[CITATIONS] Found {len(cited_filenames)} unique documents cited in answer: {cited_filenames}")
+
+            # Filter citations to only include documents that were actually cited
+            if cited_filenames:
+                filtered_citations = [
+                    citation for citation in all_citations
+                    if citation['document_title'] in cited_filenames
+                ]
+                logger.info(f"[CITATIONS] Filtered from {len(all_citations)} to {len(filtered_citations)} citations")
+            else:
+                # If no citations found in answer (shouldn't happen but fallback), use all
+                logger.warning("[CITATIONS] No citations found in answer, using all retrieved documents")
+                filtered_citations = all_citations
+
+            # Send filtered citations to client
+            yield f"data: {json.dumps({'type': 'sources', 'citations': filtered_citations})}\n\n"
+            await asyncio.sleep(0)
+
             # Generate and send follow-up question suggestions (separate LLM call)
             followup_questions = await self.generate_followup_questions(
                 question=question,
                 answer=full_answer,
-                citations=citations
+                citations=filtered_citations
             )
             yield f"data: {json.dumps({'type': 'followups', 'questions': followup_questions})}\n\n"
             await asyncio.sleep(0)
@@ -894,15 +945,37 @@ Now generate follow-up questions:"""
             # Replace newlines with HTML line breaks
             answer = answer.replace('\n', '<br>')
 
-            # Step 5: Build citations (document-level, not chunk-level)
-            citations = []
+            # Step 5: Build all potential citations (document-level, not chunk-level)
+            all_citations = []
             for doc in documents_with_text:
-                citations.append({
+                all_citations.append({
                     "source_url": doc['metadata']['source_url'],
                     "document_title": doc['metadata']['document_title'],
                     "document_type": doc['metadata']['document_type'],
                     "summary": doc['metadata']['summary']
                 })
+
+            # Extract which documents were actually cited in the answer
+            import re
+            cited_filenames = set()
+            citation_pattern = r'<a href="[^"]*">([^<]+\.pdf)</a>'
+            matches = re.findall(citation_pattern, answer)
+            for filename in matches:
+                cited_filenames.add(filename)
+
+            logger.info(f"[CITATIONS LLM-SELECT] Found {len(cited_filenames)} unique documents cited: {cited_filenames}")
+
+            # Filter citations to only include documents that were actually cited
+            if cited_filenames:
+                citations = [
+                    citation for citation in all_citations
+                    if citation['document_title'] in cited_filenames
+                ]
+                logger.info(f"[CITATIONS LLM-SELECT] Filtered from {len(all_citations)} to {len(citations)} citations")
+            else:
+                # If no citations found in answer (shouldn't happen but fallback), use all
+                logger.warning("[CITATIONS LLM-SELECT] No citations found in answer, using all selected documents")
+                citations = all_citations
 
             result = {
                 "answer": answer,
