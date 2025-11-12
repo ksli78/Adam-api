@@ -550,11 +550,19 @@ async def query_employee_directory_stream(request: SQLQueryRequest):
             )
 
             # Generate and send follow-up question suggestions
-            followup_questions = await sql_handler.generate_followup_questions(
-                user_query=request.prompt,
-                results=results,
-                metadata=exec_metadata
-            )
+            # For single results, check if followups were already generated during streaming (combined LLM call)
+            if hasattr(sql_handler, '_last_streamed_followups') and sql_handler._last_streamed_followups:
+                followup_questions = sql_handler._last_streamed_followups
+                logger.info(f"[SQL STREAM] Using cached follow-ups from combined LLM call: {len(followup_questions)} questions")
+            else:
+                # For multiple results (tables), generate followups separately
+                followup_questions = await sql_handler.generate_followup_questions(
+                    user_query=request.prompt,
+                    results=results,
+                    metadata=exec_metadata
+                )
+                logger.info(f"[SQL STREAM] Generated follow-ups separately: {len(followup_questions)} questions")
+
             yield f"data: {json.dumps({'type': 'followups', 'questions': followup_questions})}\n\n"
             await asyncio.sleep(0)
 
