@@ -6,14 +6,14 @@ employee_directory:
   database_type: "mssql"
 
   connection:
-    server: "localhost"
+    server: "CLGDBS02"
     port: 1433
     database: "Corporate"
     user: "svcasm-adamAi"
     password_env: "EMPLOYEE_DB_PASSWORD"  # Set via environment variable
     driver: "ODBC Driver 17 for SQL Server"
     # For Windows Authentication in production, set use_windows_auth: true
-    use_windows_auth: false
+    use_windows_auth: true
 
   security:
     max_rows: 1000
