@@ -595,9 +595,9 @@ class AdvancedRAGPipeline:
             yield f"data: {json.dumps({'type': 'status', 'message': 'Generating answer...'})}\n\n"
             await asyncio.sleep(0)
 
-            # Step 4: Stream LLM response token by token
-            # Use EXACT SAME PROMPT as regular endpoint for consistent quality
-            prompt = f"""Answer the following question using ONLY the information from the documents provided below.
+            # Step 4: Stream LLM response token by token with combined answer + follow-ups
+            # COMBINED PROMPT: Generate answer AND follow-up questions in ONE call for performance
+            prompt = f"""Answer the following question using ONLY the information from the documents provided below, then generate follow-up questions.
 
 QUESTION:
 {question}
@@ -605,7 +605,7 @@ QUESTION:
 DOCUMENTS:
 {context}
 
-INSTRUCTIONS:
+TASK 1 - ANSWER THE QUESTION:
 - Provide a direct, helpful answer to the question
 - Use information ONLY from the documents above
 - Include specific details (section numbers, dates, amounts) when relevant
@@ -617,27 +617,54 @@ CITATION EXAMPLE:
 ✓ CORRECT: "Employees must submit requests via the Decisions tool (<span><a href="https://...">EN-PO-0301.pdf</a></span>)."
 ✗ WRONG: "Employees must submit requests via the Decisions tool. For more details, see EN-PO-0301.pdf."
 
-Now provide your answer with inline citations after each point:"""
+TASK 2 - GENERATE 2-3 FOLLOW-UP QUESTIONS:
+- SHORT and SPECIFIC (5-10 words max)
+- Directly related to the policy topic or answer content
+- Focus on actionable questions about procedures, requirements, deadlines, or clarifications
+- Common types: "How do I...?", "What are the requirements for...?", "When is the deadline for...?", "Who do I contact about...?"
 
-            logger.info("Starting LLM streaming generation...")
+CRITICAL RULES FOR FOLLOW-UPS:
+- NEVER reference specific PDF filenames (e.g., "What is EN-XXX.pdf about?")
+- NEVER ask about document structure or contents
+- ALWAYS focus on the POLICY TOPIC itself (e.g., PTO, expenses, approvals)
+- Use natural, conversational language
+- Questions should be answerable from policy documents
+
+OUTPUT FORMAT (CRITICAL):
+First provide the formatted answer with inline citations, then on a new line put "###FOLLOWUPS###", then list 2-3 questions one per line.
+
+Example:
+Employees accrue 15 days of PTO per year (<span><a href="https://...">PTO-Policy.pdf</a></span>). Requests must be submitted at least 2 weeks in advance (<span><a href="https://...">PTO-Policy.pdf</a></span>).
+###FOLLOWUPS###
+How do I request PTO?
+Can I carry over unused PTO to next year?
+What are the blackout dates for PTO?
+
+Now provide your answer with inline citations, then follow-up questions:"""
+
+            logger.info("Starting combined LLM streaming generation (answer + follow-ups)...")
 
             # Call Ollama with streaming enabled
+            # Increased num_predict to account for answer + follow-up questions
             response = self.ollama_client.generate(
                 model=LLM_MODEL,
                 prompt=prompt,
                 options={
                     "temperature": temperature,
-                    "num_predict": 2000,
+                    "num_predict": 2200,  # Increased from 2000 to account for follow-ups
                     "num_ctx": LLM_CONTEXT_WINDOW
                 },
                 stream=True
             )
 
-            # Stream tokens as they're generated
+            # Stream tokens as they're generated, with buffering to detect marker
             full_answer = ""
+            streamed_response = ""  # Track what we've actually streamed
             token_count = 0
+            in_followups_section = False
+            buffer = ""  # Buffer tokens to detect marker before streaming
 
-            logger.info("[STREAM] Starting LLM token generation...")
+            logger.info("[RAG STREAM] Starting combined LLM generation (answer + followups)...")
 
             for chunk in response:
                 # Access response attribute directly (chunk is GenerateResponse object, not dict)
@@ -646,25 +673,87 @@ Now provide your answer with inline citations after each point:"""
                     full_answer += token
                     token_count += 1
 
-                    # Replace newlines with <br> for HTML display (same as regular endpoint)
-                    display_token = token.replace('\n', '<br>')
+                    # Check if we've hit the followups marker
+                    if "###FOLLOWUPS###" in full_answer and not in_followups_section:
+                        in_followups_section = True
+                        logger.info("[RAG STREAM] Detected followups marker, stopping answer stream")
+                        # Extract answer part (before marker) and stream any remaining unstreamed content
+                        answer_part = full_answer.split("###FOLLOWUPS###")[0]
+                        remaining = answer_part[len(streamed_response):]
+                        if remaining:
+                            display_token = remaining.replace('\n', '<br>')
+                            yield f"data: {json.dumps({'type': 'token', 'content': display_token})}\n\n"
+                            await asyncio.sleep(0)
+                            streamed_response = answer_part
+                        # Stop streaming answer tokens
+                        break
 
-                    # DEBUG: Log first 5 tokens and every 50th token to verify streaming
-                    if token_count <= 5 or token_count % 50 == 0:
-                        logger.info(f"[STREAM] Token #{token_count}: {repr(token[:30])}")
+                    # Only stream tokens if we haven't hit the followups section yet
+                    if not in_followups_section:
+                        # Add token to buffer
+                        buffer += token
 
-                    # CRITICAL: Yield token and immediately yield control to event loop
-                    yield f"data: {json.dumps({'type': 'token', 'content': display_token})}\n\n"
-                    await asyncio.sleep(0)  # THIS IS THE KEY - yields control and flushes to client!
+                        # Check if buffer might contain start of marker
+                        # If last 20 chars contain "##" or "###", keep buffering
+                        check_buffer = buffer[-20:] if len(buffer) > 20 else buffer
+                        if "###" in check_buffer or "##F" in check_buffer or "##FO" in check_buffer:
+                            # Might be starting marker, keep buffering until we're sure
+                            if len(buffer) < 30:  # Buffer up to 30 chars to be safe
+                                continue
 
-            logger.info(f"[STREAM COMPLETE] Generated {token_count} tokens, {len(full_answer)} characters")
+                        # Safe to stream the buffer (minus last 15 chars which we keep as safety margin)
+                        if len(buffer) > 15:
+                            to_stream = buffer[:-15]
+                            buffer = buffer[-15:]  # Keep last 15 chars in buffer
 
-            # Generate and send follow-up question suggestions
-            followup_questions = await self.generate_followup_questions(
-                question=question,
-                answer=full_answer,
-                citations=citations
-            )
+                            # Replace newlines with <br> for HTML display
+                            display_token = to_stream.replace('\n', '<br>')
+
+                            # Track what we've streamed
+                            streamed_response += to_stream
+
+                            # DEBUG: Log first 5 tokens and every 50th token to verify streaming
+                            if token_count <= 5 or token_count % 50 == 0:
+                                logger.info(f"[RAG STREAM] Token #{token_count}: {repr(to_stream[:30])}")
+
+                            # CRITICAL: Yield token and immediately yield control to event loop
+                            yield f"data: {json.dumps({'type': 'token', 'content': display_token})}\n\n"
+                            await asyncio.sleep(0)  # Flush to client
+
+            # After loop ends, flush any remaining buffer (if not in followups section)
+            if buffer and not in_followups_section:
+                display_token = buffer.replace('\n', '<br>')
+                yield f"data: {json.dumps({'type': 'token', 'content': display_token})}\n\n"
+                await asyncio.sleep(0)
+
+            logger.info(f"[RAG STREAM COMPLETE] Generated {token_count} tokens, {len(full_answer)} characters")
+
+            # Parse the response to extract answer and followups from combined output
+            followup_questions = []
+            if "###FOLLOWUPS###" in full_answer:
+                parts = full_answer.split("###FOLLOWUPS###")
+                final_answer = parts[0].strip()
+                followups_text = parts[1].strip() if len(parts) > 1 else ""
+
+                # Parse followup questions (one per line)
+                followup_questions = [q.strip() for q in followups_text.split('\n') if q.strip()]
+                # Remove any numbering
+                import re
+                followup_questions = [re.sub(r'^[\d\.\-\*\)]+\s*', '', q) for q in followup_questions]
+                followup_questions = followup_questions[:3]  # Limit to 3
+
+                logger.info(f"[RAG STREAM] Extracted {len(followup_questions)} follow-up questions from combined response")
+            else:
+                # If marker not found, use full response as answer, generate fallback followups
+                logger.warning("[RAG STREAM] Followups marker not found in response")
+                final_answer = full_answer.strip()
+                followup_questions = [
+                    "Tell me more about this policy",
+                    "Are there any exceptions?",
+                    "Who should I contact for questions?"
+                ]
+
+            # Send follow-up questions to client
             yield f"data: {json.dumps({'type': 'followups', 'questions': followup_questions})}\n\n"
             await asyncio.sleep(0)
 
@@ -690,6 +779,9 @@ Now provide your answer with inline citations after each point:"""
         """
         Generate contextual follow-up questions for RAG responses.
 
+        NOTE: This method is only used by the non-streaming endpoint.
+        The streaming endpoint uses combined answer + followup generation.
+
         Args:
             question: Original user question
             answer: Generated answer
@@ -698,32 +790,33 @@ Now provide your answer with inline citations after each point:"""
         Returns:
             List of 2-3 suggested follow-up questions
         """
-        # Build context from citations
-        doc_titles = list(set([c.get('document_title', 'Unknown') for c in citations[:3]]))
-        context_text = f"Documents referenced: {', '.join(doc_titles)}" if doc_titles else "Policy documents"
+        # Extract policy topics from answer instead of document titles
+        # This avoids generating questions like "What is EN-XXX.pdf about?"
+        answer_preview = answer[:500]
 
         prompt = f"""You are helping generate follow-up questions for a policy document query system.
 
 ORIGINAL QUESTION: {question}
 
-ANSWER SUMMARY: {answer[:500]}...
-
-CONTEXT: {context_text}
+ANSWER SUMMARY: {answer_preview}...
 
 Generate 2-3 natural, conversational follow-up questions that a user might want to ask based on this answer.
 
-RULES:
+CRITICAL RULES:
 1. Questions should be SHORT and SPECIFIC (5-10 words max)
-2. Questions should be directly related to the answer or mentioned policies
-3. Use natural language (no overly formal phrasing)
-4. Common follow-up types:
-   - Clarification: "What are the specific requirements for...?" or "How often must...?"
-   - Related policies: "What are the rules for...?" or "Are there exceptions to...?"
+2. Questions should be directly related to the POLICY TOPIC or answer content
+3. NEVER reference specific PDF filenames (e.g., "What is EN-XXX.pdf about?")
+4. NEVER ask about document structure or contents
+5. ALWAYS focus on the policy topic itself (e.g., PTO, expenses, approvals, procedures)
+6. Use natural, conversational language
+7. Common follow-up types:
    - Procedures: "How do I...?" or "What's the process for...?"
+   - Requirements: "What are the requirements for...?" or "What do I need to...?"
+   - Clarification: "What are the specific rules for...?" or "How often must...?"
+   - Related policies: "Are there exceptions to...?" or "What happens if...?"
    - Deadlines: "When is the deadline for...?" or "How long does it take to...?"
    - Responsibilities: "Who is responsible for...?" or "Who should I contact about...?"
-5. If answer mentions specific policy numbers, suggest related policy questions
-6. Return ONLY the questions, one per line, no numbering, no explanations
+8. Return ONLY the questions, one per line, no numbering, no explanations
 
 EXAMPLES:
 
