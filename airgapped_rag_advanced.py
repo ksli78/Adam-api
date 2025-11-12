@@ -657,12 +657,11 @@ Now provide your answer with inline citations, then follow-up questions:"""
                 stream=True
             )
 
-            # Stream tokens as they're generated, with buffering to detect marker
+            # Stream tokens as they're generated
             full_answer = ""
-            streamed_response = ""  # Track what we've actually streamed
+            streamed_response = ""  # Track what we've actually streamed to detect marker
             token_count = 0
             in_followups_section = False
-            buffer = ""  # Buffer tokens to detect marker before streaming
 
             logger.info("[RAG STREAM] Starting combined LLM generation (answer + followups)...")
 
@@ -690,41 +689,19 @@ Now provide your answer with inline citations, then follow-up questions:"""
 
                     # Only stream tokens if we haven't hit the followups section yet
                     if not in_followups_section:
-                        # Add token to buffer
-                        buffer += token
+                        # Replace newlines with <br> for HTML display
+                        display_token = token.replace('\n', '<br>')
 
-                        # Check if buffer might contain start of marker
-                        # If last 20 chars contain "##" or "###", keep buffering
-                        check_buffer = buffer[-20:] if len(buffer) > 20 else buffer
-                        if "###" in check_buffer or "##F" in check_buffer or "##FO" in check_buffer:
-                            # Might be starting marker, keep buffering until we're sure
-                            if len(buffer) < 30:  # Buffer up to 30 chars to be safe
-                                continue
+                        # Track what we've streamed
+                        streamed_response += token
 
-                        # Safe to stream the buffer (minus last 15 chars which we keep as safety margin)
-                        if len(buffer) > 15:
-                            to_stream = buffer[:-15]
-                            buffer = buffer[-15:]  # Keep last 15 chars in buffer
+                        # DEBUG: Log first 5 tokens and every 50th token to verify streaming
+                        if token_count <= 5 or token_count % 50 == 0:
+                            logger.info(f"[RAG STREAM] Token #{token_count}: {repr(token[:30])}")
 
-                            # Replace newlines with <br> for HTML display
-                            display_token = to_stream.replace('\n', '<br>')
-
-                            # Track what we've streamed
-                            streamed_response += to_stream
-
-                            # DEBUG: Log first 5 tokens and every 50th token to verify streaming
-                            if token_count <= 5 or token_count % 50 == 0:
-                                logger.info(f"[RAG STREAM] Token #{token_count}: {repr(to_stream[:30])}")
-
-                            # CRITICAL: Yield token and immediately yield control to event loop
-                            yield f"data: {json.dumps({'type': 'token', 'content': display_token})}\n\n"
-                            await asyncio.sleep(0)  # Flush to client
-
-            # After loop ends, flush any remaining buffer (if not in followups section)
-            if buffer and not in_followups_section:
-                display_token = buffer.replace('\n', '<br>')
-                yield f"data: {json.dumps({'type': 'token', 'content': display_token})}\n\n"
-                await asyncio.sleep(0)
+                        # CRITICAL: Yield token and immediately yield control to event loop
+                        yield f"data: {json.dumps({'type': 'token', 'content': display_token})}\n\n"
+                        await asyncio.sleep(0)  # Flush to client
 
             logger.info(f"[RAG STREAM COMPLETE] Generated {token_count} tokens, {len(full_answer)} characters")
 
