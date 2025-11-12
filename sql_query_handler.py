@@ -1117,9 +1117,9 @@ Now generate the response:"""
 
             # Stream tokens as they're generated
             full_response = ""
+            streamed_response = ""  # Track what we've actually streamed
             token_count = 0
             in_followups_section = False
-            answer_part = ""
 
             logger.info("[SQL STREAM] Starting combined LLM generation (answer + followups)...")
 
@@ -1133,16 +1133,25 @@ Now generate the response:"""
                     # Check if we've hit the followups marker
                     if "###FOLLOWUPS###" in full_response and not in_followups_section:
                         in_followups_section = True
-                        # Don't stream the marker or anything after it
-                        # Extract just the answer part (before marker)
-                        answer_part = full_response.split("###FOLLOWUPS###")[0].strip()
                         logger.info("[SQL STREAM] Detected followups marker, stopping answer stream")
-                        continue
+                        # Extract answer part (before marker) and stream any remaining unstreamed content
+                        answer_part = full_response.split("###FOLLOWUPS###")[0]
+                        remaining = answer_part[len(streamed_response):]
+                        if remaining:
+                            display_token = remaining.replace('\n', '<br>')
+                            yield display_token
+                            await asyncio.sleep(0)
+                            streamed_response = answer_part
+                        # Stop streaming
+                        break
 
                     # Only stream tokens if we haven't hit the followups section yet
                     if not in_followups_section:
                         # Replace newlines with <br> for HTML display
                         display_token = token.replace('\n', '<br>')
+
+                        # Track what we've streamed
+                        streamed_response += token
 
                         # DEBUG: Log first 5 tokens and every 50th token to verify streaming
                         if token_count <= 5 or token_count % 50 == 0:
@@ -1271,8 +1280,9 @@ Now generate the response:"""
             ]
 
         # Build context from results for more relevant suggestions
+        # Format: "John Smith, Manager in DEPT-001" (no "Result 1:" prefix to avoid confusion)
         result_summary = []
-        for i, result in enumerate(results[:3], 1):  # Only use first 3 results for context
+        for result in results[:3]:  # Only use first 3 results for context
             name = None
             if 'FirstName' in result and 'LastName' in result:
                 first = result.get('FirstName', '')
@@ -1283,14 +1293,16 @@ Now generate the response:"""
             title = result.get('BusinessTitle', '')
             dept = result.get('HomeDept', '')
 
-            summary = f"Result {i}:"
+            summary_parts = []
             if name:
-                summary += f" {name}"
+                summary_parts.append(name)
             if title:
-                summary += f", {title}"
+                summary_parts.append(title)
             if dept:
-                summary += f" in {dept}"
-            result_summary.append(summary)
+                summary_parts.append(f"in {dept}")
+
+            if summary_parts:
+                result_summary.append(", ".join(summary_parts))
 
         context_text = "\n".join(result_summary) if result_summary else "Employee information"
 
@@ -1303,18 +1315,19 @@ RESULTS SUMMARY:
 
 Generate 2-3 natural, conversational follow-up questions that a user might want to ask based on these results.
 
-RULES:
+CRITICAL RULES:
 1. Questions should be SHORT and SPECIFIC (5-10 words max)
-2. Questions should be directly related to the people/results returned
-3. Use natural language (no overly formal phrasing)
-4. Common follow-up types:
+2. ALWAYS use the ACTUAL PERSON'S NAME from the results (e.g., "John Smith", "Jane Doe")
+3. NEVER use generic terms like "Result 1", "Result 2", "the person", "this employee"
+4. Use natural language (no overly formal phrasing)
+5. Common follow-up types:
    - Contact information: "What is [name]'s email?" or "What is [name]'s phone number?"
    - Location: "Where does [name] sit?" or "What building is [name] in?"
    - Reporting structure: "Who does [name] report to?" or "Who reports to [name]?"
    - Team information: "Who else is in [department]?" or "List [name]'s direct reports"
    - Role details: "What is [name]'s full title?" or "When did [name] start?"
-5. If the result shows a title like "Director" or "Manager", suggest questions about their team or department
-6. Return ONLY the questions, one per line, no numbering, no explanations
+6. If the result shows a title like "Director" or "Manager", suggest questions about their team or department
+7. Return ONLY the questions, one per line, no numbering, no explanations
 
 EXAMPLES:
 
@@ -1333,11 +1346,14 @@ What is Jane Doe's contact information?
 List all employees in OPS-001
 
 Original: "List employees in Engineering"
-Results: 15 employees
+Results: Bob Johnson, Senior Engineer in ENGR-001
+Alice Williams, Manager in ENGR-001
 Follow-ups:
-Show managers in Engineering
-Who is the director of Engineering?
-Filter by seniority level
+What is Bob Johnson's email?
+Who reports to Alice Williams?
+Show all staff in ENGR-001
+
+IMPORTANT: Use actual names from the results, NOT "Result 1" or generic references!
 
 Now generate follow-up questions:"""
 
