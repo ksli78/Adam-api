@@ -287,15 +287,95 @@ class SQLQueryHandler:
 
         return False
 
+    def _detect_phrases(self, normalized_query: str) -> List[str]:
+        """
+        Detect multi-word phrases in the query before tokenization.
+
+        This is critical for handling queries like "vice president" which should
+        map to "VP", not be split into separate "vice" and "president" tokens.
+
+        Args:
+            normalized_query: Normalized query string
+
+        Returns:
+            List of phrases/keywords (preserving multi-word phrases)
+        """
+        # Multi-word phrases to detect (order matters - longest first)
+        MULTI_WORD_PHRASES = [
+            "senior vice president",
+            "executive vice president",
+            "vice president",
+            "senior vp",
+            "executive vp",
+            "human resources",
+            "human resource",
+            "information technology",
+            "info tech",
+        ]
+
+        # Track which positions are part of a phrase
+        query_lower = normalized_query.lower()
+        phrase_positions = set()
+        detected_phrases = []
+
+        # Find all multi-word phrases
+        for phrase in MULTI_WORD_PHRASES:
+            start = 0
+            while True:
+                pos = query_lower.find(phrase, start)
+                if pos == -1:
+                    break
+
+                # Check if this position is already part of another phrase
+                phrase_range = range(pos, pos + len(phrase))
+                if not any(p in phrase_positions for p in phrase_range):
+                    # Mark positions as used
+                    phrase_positions.update(phrase_range)
+                    detected_phrases.append((pos, phrase))
+                    logger.debug(f"Detected phrase '{phrase}' at position {pos}")
+
+                start = pos + 1
+
+        # If we found phrases, reconstruct the query with phrase markers
+        if detected_phrases:
+            # Sort by position
+            detected_phrases.sort(key=lambda x: x[0])
+
+            # Build final keyword list
+            keywords = []
+            last_end = 0
+
+            for pos, phrase in detected_phrases:
+                # Add any words before this phrase
+                before_text = normalized_query[last_end:pos].strip()
+                if before_text:
+                    keywords.extend(before_text.split())
+
+                # Add the phrase as a single keyword
+                keywords.append(phrase)
+                last_end = pos + len(phrase)
+
+            # Add any remaining words after last phrase
+            after_text = normalized_query[last_end:].strip()
+            if after_text:
+                keywords.extend(after_text.split())
+
+            logger.debug(f"After phrase detection: {keywords}")
+            return keywords
+        else:
+            # No phrases detected, just split normally
+            return normalized_query.split()
+
     def _build_smart_title_sql(self, user_query: str, normalized_query: str) -> Optional[str]:
         """
         Build smart SQL for title searches with keyword expansion and tiered matching.
 
         Process:
-        1. Extract title keywords from query
-        2. Expand each keyword (synonyms + plurals)
-        3. Generate SQL with OR groups for each keyword
-        4. Require ALL keyword groups to match (strict)
+        1. Detect multi-word phrases (e.g., "vice president")
+        2. Extract title keywords from query
+        3. Expand each keyword (synonyms + plurals)
+        4. Generate SQL with OR groups for each keyword
+        5. Require ALL keyword groups to match (strict)
 
         Args:
             user_query: Original user query
@@ -304,9 +384,11 @@ class SQLQueryHandler:
         Returns:
             SQL query string or None if can't generate
         """
+        # Detect multi-word phrases first (before tokenization)
+        tokens = self._detect_phrases(normalized_query)
+
         # Remove common question words
         stop_words = ['who', 'is', 'the', 'of', 'for', 'a', 'an', 'in', 'at', 'to', 'find', 'show', 'me', 'get', 'what', 'name']
-        tokens = normalized_query.split()
         keywords = [t for t in tokens if t not in stop_words and len(t) > 1]
 
         if not keywords:
@@ -702,6 +784,81 @@ class SQLQueryHandler:
 
         return ''.join(html_parts)
 
+    def _extract_all_person_names(self, result: Dict[str, Any]) -> List[str]:
+        """
+        Extract all person names from a result row, including employee and supervisor/manager.
+
+        This is critical for follow-up question generation - if a result mentions both
+        an employee and their manager, we need both names for the LLM to generate
+        accurate follow-up questions without using placeholders like "[reporting manager]".
+
+        Returns:
+            List of person names found in the result (e.g., ["John Smith", "Jane Doe"])
+        """
+        names = []
+
+        # Extract employee name
+        if 'FirstName' in result and 'LastName' in result:
+            first = result.get('FirstName', '')
+            last = result.get('LastName', '')
+            if first or last:
+                name = f"{first} {last}".strip()
+                if name:
+                    names.append(name)
+
+        # Extract supervisor/manager names (various possible field patterns)
+        # Pattern 1: SupervisorFirstName + SupervisorLastName
+        if 'SupervisorFirstName' in result and 'SupervisorLastName' in result:
+            first = result.get('SupervisorFirstName', '')
+            last = result.get('SupervisorLastName', '')
+            if first or last:
+                name = f"{first} {last}".strip()
+                if name:
+                    names.append(name)
+
+        # Pattern 2: ManagerFirstName + ManagerLastName
+        if 'ManagerFirstName' in result and 'ManagerLastName' in result:
+            first = result.get('ManagerFirstName', '')
+            last = result.get('ManagerLastName', '')
+            if first or last:
+                name = f"{first} {last}".strip()
+                if name:
+                    names.append(name)
+
+        # Pattern 3: Concatenated Supervisor field
+        if 'Supervisor' in result:
+            supervisor = result.get('Supervisor', '')
+            if supervisor and isinstance(supervisor, str) and len(supervisor) > 2:
+                # Check if it looks like a name (has letters, not just ID)
+                if any(c.isalpha() for c in supervisor):
+                    names.append(supervisor.strip())
+
+        # Pattern 4: Concatenated Manager field
+        if 'Manager' in result:
+            manager = result.get('Manager', '')
+            if manager and isinstance(manager, str) and len(manager) > 2:
+                # Check if it looks like a name (has letters, not just ID)
+                if any(c.isalpha() for c in manager):
+                    names.append(manager.strip())
+
+        # Pattern 5: Employee field (when result is about "who reports to X")
+        if 'Employee' in result:
+            employee = result.get('Employee', '')
+            if employee and isinstance(employee, str) and len(employee) > 2:
+                # Check if it looks like a name (has letters, not just ID)
+                if any(c.isalpha() for c in employee):
+                    names.append(employee.strip())
+
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_names = []
+        for name in names:
+            if name not in seen:
+                seen.add(name)
+                unique_names.append(name)
+
+        return unique_names
+
     async def format_results(
         self,
         user_query: str,
@@ -921,8 +1078,8 @@ FORMATTED ANSWER:"""
         """
         Stream SQL results as natural language using LLM or direct HTML generation.
 
-        Yields tokens as they're generated by the LLM for small result sets.
-        For large result sets (>10 rows), yields the complete HTML table immediately.
+        - Single result (1 row): Stream LLM-generated natural language
+        - Multiple results (2+ rows): Generate Python table, send complete (no streaming)
 
         Args:
             user_query: Original user question
@@ -930,7 +1087,7 @@ FORMATTED ANSWER:"""
             metadata: Query metadata (row count, etc.)
 
         Yields:
-            Individual tokens or complete HTML content
+            Individual tokens (for 1 result) or complete HTML (for 2+ results)
         """
         rows_returned = metadata['rows_returned']
         max_rows = self.security_config['max_rows']
@@ -943,10 +1100,10 @@ FORMATTED ANSWER:"""
             )
             return
 
-        # For large result sets (>10 rows), generate table directly in Python
-        # This is much faster and more reliable than LLM generation
-        if rows_returned > 10:
-            logger.info(f"Using Python-based table generation for {rows_returned} rows (no streaming needed)")
+        # For multiple results (2+), generate table directly in Python (no LLM, no streaming)
+        # This avoids broken HTML from streaming partial tables
+        if rows_returned >= 2:
+            logger.info(f"Using Python-based table generation for {rows_returned} rows (complete, no streaming)")
             table_html = self._generate_html_table(results)
 
             # Add overflow warning if needed
@@ -960,70 +1117,70 @@ FORMATTED ANSWER:"""
             yield table_html
             return
 
-        # For small result sets, use LLM streaming
-        # Build prompt for result formatting (same as non-streaming version)
-        prompt = f"""You are formatting database query results. Provide a direct, concise answer with HTML formatting.
+        # For single result (1 row), use LLM streaming for natural language
+        # COMBINED PROMPT: Ask for both answer AND follow-up questions in ONE call
+        # Build context from results - extract ALL person names (employee + supervisor/manager)
+        result = results[0]
+
+        # Extract all person names using helper method
+        all_names = self._extract_all_person_names(result)
+        names_text = ", ".join(all_names) if all_names else "person"
+
+        # Extract additional context
+        title = result.get('BusinessTitle', '')
+        dept = result.get('HomeDept', '')
+
+        # Build context summary with all names
+        context_summary = f"People mentioned: {names_text}"
+        if title:
+            context_summary += f"; Title: {title}"
+        if dept:
+            context_summary += f"; Department: {dept}"
+
+        prompt = f"""You are formatting database query results and generating follow-up questions.
 
 USER QUESTION: {user_query}
 
-QUERY RESULTS ({rows_returned} rows):
-{json.dumps(results, indent=2)}
+QUERY RESULT (1 row):
+{json.dumps(results[0], indent=2)}
 
-CRITICAL FORMATTING RULES:
-1. Answer directly - NO preambles like "Here is..." or "The answer is..."
-2. DO NOT repeat or echo the user's question in your answer
-3. NO closing statements like "Let me know..." or notes about result count
-4. Choose format based on result type:
-   A. SINGLE RESULT or CONTACT INFO: Use label:value format with line breaks
-      - Single line break (\n) between fields
-      - ABSOLUTELY NO triple line breaks (\n\n\n)
-      - Email addresses: Format as <a href="mailto:EMAIL">EMAIL</a>
-      - Phone numbers: Format as <a href="tel:PHONE">PHONE</a>
-   B. MULTIPLE RESULTS (lists): Use HTML TABLE format with:
-      - NO <br> tags inside table elements (no <br> in <th>, <td>, or <tr>)
-      - Header style: <th style="background-color: #D6D4D4; padding: 4px; text-align: left;">
-      - For >3 rows: Alternate row colors using <tr style="background-color: #F5F5F5;"> for even rows
-      - Cell style: <td style="padding: 4px; vertical-align: top;">
-      - Make emails clickable: <a href="mailto:EMAIL">EMAIL</a>
-      - Table style: <table style="border-collapse: collapse; width: 100%;">
-5. For names: ALWAYS use FirstName and LastName fields, NEVER use UserName field
-6. NEVER display ID fields (PersonnelId, EmpNo, SupervisorNo) in output - skip them entirely
-7. For dates: Format nicely (e.g., "January 15, 2020")
-8. Skip null/empty fields
-9. NEVER include sensitive fields (AnnualRate)
+PEOPLE IN THIS RESULT: {names_text}
+(These are the ACTUAL NAMES you MUST use in follow-up questions - NEVER use placeholders!)
 
-FORMATTING EXAMPLES:
+TASK 1 - Format the answer:
+- Answer directly - NO preambles like "Here is..." or "The answer is..."
+- DO NOT repeat or echo the user's question
+- Use label:value format with single line breaks (\n)
+- Email addresses: Format as <a href="mailto:EMAIL">EMAIL</a>
+- Phone numbers: Format as <a href="tel:PHONE">PHONE</a>
+- Use FirstName and LastName fields (NEVER UserName)
+- NEVER display ID fields (PersonnelId, EmpNo, SupervisorNo)
+- Skip null/empty fields
+- For "Who is the [TITLE]" questions, use format: "[Name] is the [Title]." followed by contact info
 
-Question: "What is John Smith's email?"
-GOOD: "John Smith's email is <a href=\\"mailto:john.smith@company.com\\">john.smith@company.com</a>."
-BAD: "What is John Smith's email?\\n\\nJohn Smith's email is..." ← DON'T repeat question!
+TASK 2 - Generate 2-3 follow-up questions:
+- SHORT and SPECIFIC (5-10 words max)
+- Directly related to the person/result returned
+- Common types: contact info, location, reporting structure, team info
+- CRITICAL: Use ACTUAL PERSON NAMES from "PEOPLE IN THIS RESULT" above
+- NEVER use placeholders like "Result 1", "[reporting manager]", "[supervisor]", "this person", "the employee"
 
-Question: "What department does Colly work for?"
-GOOD: "Colly works for the ENGR-003 department."
-BAD: "What department does Colly work for? Colly works for..." ← DON'T echo question!
+OUTPUT FORMAT (CRITICAL):
+First provide the formatted answer, then on a new line put "###FOLLOWUPS###", then list the questions one per line.
 
-Question: "What is John Smith's contact info?"
-GOOD: "John Smith's contact information:\\n\\nName: John A Smith\\nOrg Code: ENGR-001\\nPhone: <a href=\\"tel:555-1234\\">555-1234</a>\\nBuilding: BLDG-1, Room: 404B\\nMail Code: MC-100\\nEmail: <a href=\\"mailto:john.smith@company.com\\">john.smith@company.com</a>\\nSupervisor: Jane K Johnson"
-BAD: "John Smith's contact information:\\n\\n\\n\\nEmail..." ← Too many line breaks!
+Example:
+Jane Doe is the VP of Operations.\n\nDepartment: OPS-001\nEmail: <a href="mailto:jane@company.com">jane@company.com</a>\nPhone: <a href="tel:555-1234">555-1234</a>
+###FOLLOWUPS###
+Who reports to Jane Doe?
+What is Jane Doe's full contact information?
+List all employees in OPS-001
 
-Question: "Who is Khaled's boss?"
-GOOD: "Khaled Sliman's boss is Colly Edgeworth, Senior Project Manager.\\n\\nEmail: <a href=\\"mailto:colly@acme.com\\">colly@acme.com</a>\\nPhone: <a href=\\"tel:555-1234\\">555-1234</a>"
-BAD: "Khaled Sliman's boss is:\\n\\n\\nColly Edgeworth, Senior Project Manager\\n\\n\\nContact information:\\n\\n\\nEmail..." ← Way too many blank lines!
+Now generate the response:"""
 
-Question: "Who is the VP of Operations?"
-GOOD: "Jane Doe is the VP of Operations.\\n\\nDepartment: OPS-001\\nEmail: <a href=\\"mailto:jane.doe@company.com\\">jane.doe@company.com</a>\\nPhone: <a href=\\"tel:555-1234\\">555-1234</a>\\nBuilding: BLDG-2, Room: 201"
-BAD: "The VP of Operations is Jane Doe..." ← Use natural "[Name] is the [Title]" format!
+        # Calculate dynamic token limit
+        num_predict = min(1000, 500 + 150)  # Answer + 3 questions
 
-Question: "Who is the director of enterprise operations?"
-GOOD: "John Smith is the Director of Enterprise Operations.\\n\\nDepartment: ENT-OPS\\nEmail: <a href=\\"mailto:john.smith@company.com\\">john.smith@company.com</a>\\nPhone: <a href=\\"tel:555-5678\\">555-5678</a>\\nBuilding: BLDG-1, Room: 305"
-BAD: "Here is the information for the director..." ← Answer directly with name and title!
-
-FORMATTED ANSWER:"""
-
-        # Calculate dynamic token limit based on number of rows
-        num_predict = min(8000, 500 + (rows_returned * 80))
-
-        logger.info(f"Streaming {rows_returned} rows with num_predict={num_predict}")
+        logger.info(f"Streaming single result with combined answer+followups generation")
 
         try:
             # Call Ollama with streaming enabled
@@ -1039,39 +1196,98 @@ FORMATTED ANSWER:"""
             )
 
             # Stream tokens as they're generated
-            full_answer = ""
+            full_response = ""
+            streamed_response = ""  # Track what we've actually streamed
             token_count = 0
+            in_followups_section = False
+            buffer = ""  # Buffer tokens to detect marker before streaming
 
-            logger.info("[SQL STREAM] Starting LLM token generation...")
+            logger.info("[SQL STREAM] Starting combined LLM generation (answer + followups)...")
 
             for chunk in response:
                 # Access response attribute directly (chunk is GenerateResponse object, not dict)
                 if hasattr(chunk, 'response') and chunk.response:
                     token = chunk.response
-                    full_answer += token
+                    full_response += token
                     token_count += 1
 
-                    # Replace newlines with <br> for HTML display (same as regular endpoint)
-                    display_token = token.replace('\n', '<br>')
+                    # Check if we've hit the followups marker
+                    if "###FOLLOWUPS###" in full_response and not in_followups_section:
+                        in_followups_section = True
+                        logger.info("[SQL STREAM] Detected followups marker, stopping answer stream")
+                        # Extract answer part (before marker) and stream any remaining unstreamed content
+                        answer_part = full_response.split("###FOLLOWUPS###")[0]
+                        remaining = answer_part[len(streamed_response):]
+                        if remaining:
+                            display_token = remaining.replace('\n', '<br>')
+                            yield display_token
+                            await asyncio.sleep(0)
+                            streamed_response = answer_part
+                        # Stop streaming
+                        break
 
-                    # DEBUG: Log first 5 tokens and every 50th token to verify streaming
-                    if token_count <= 5 or token_count % 50 == 0:
-                        logger.info(f"[SQL STREAM] Token #{token_count}: {repr(token[:30])}")
+                    # Only stream tokens if we haven't hit the followups section yet
+                    if not in_followups_section:
+                        # Add token to buffer
+                        buffer += token
 
-                    # CRITICAL: Yield token and immediately yield control to event loop
-                    yield display_token
-                    await asyncio.sleep(0)  # THIS IS THE KEY - yields control and flushes to client!
+                        # Check if buffer might contain start of marker
+                        # If last 20 chars contain "##" or "###", keep buffering
+                        check_buffer = buffer[-20:] if len(buffer) > 20 else buffer
+                        if "###" in check_buffer or "##F" in check_buffer or "##FO" in check_buffer:
+                            # Might be starting marker, keep buffering until we're sure
+                            if len(buffer) < 30:  # Buffer up to 30 chars to be safe
+                                continue
 
-            logger.info(f"[SQL STREAM COMPLETE] Generated {token_count} tokens, {len(full_answer)} characters")
+                        # Safe to stream the buffer (minus last 15 chars which we keep as safety margin)
+                        if len(buffer) > 15:
+                            to_stream = buffer[:-15]
+                            buffer = buffer[-15:]  # Keep last 15 chars in buffer
 
-            # Check if answer contains HTML table
-            if '<table' in full_answer.lower():
-                # Note: We already replaced \n with <br> during streaming, so no post-processing needed
-                pass
+                            # Replace newlines with <br> for HTML display
+                            display_token = to_stream.replace('\n', '<br>')
+
+                            # Track what we've streamed
+                            streamed_response += to_stream
+
+                            # DEBUG: Log first 5 tokens and every 50th token to verify streaming
+                            if token_count <= 5 or token_count % 50 == 0:
+                                logger.info(f"[SQL STREAM] Token #{token_count}: {repr(to_stream[:30])}")
+
+                            # CRITICAL: Yield token and immediately yield control to event loop
+                            yield display_token
+                            await asyncio.sleep(0)  # Flush to client
+
+            # After loop ends, flush any remaining buffer (if not in followups section)
+            if buffer and not in_followups_section:
+                display_token = buffer.replace('\n', '<br>')
+                yield display_token
+                await asyncio.sleep(0)
+
+            logger.info(f"[SQL STREAM COMPLETE] Generated {token_count} tokens, {len(full_response)} characters")
+
+            # Parse the response to extract answer and followups
+            if "###FOLLOWUPS###" in full_response:
+                parts = full_response.split("###FOLLOWUPS###")
+                final_answer = parts[0].strip()
+                followups_text = parts[1].strip() if len(parts) > 1 else ""
+
+                # Parse followup questions (one per line)
+                followup_questions = [q.strip() for q in followups_text.split('\n') if q.strip()]
+                # Remove any numbering
+                followup_questions = [re.sub(r'^[\d\.\-\*\)]+\s*', '', q) for q in followup_questions]
+                followup_questions = followup_questions[:3]  # Limit to 3
+
+                logger.info(f"[SQL STREAM] Extracted {len(followup_questions)} follow-up questions from combined response")
             else:
-                # Aggressively collapse excessive consecutive line breaks
-                # This is already handled during streaming by replacing \n with <br>
-                pass
+                # If marker not found, use full response as answer, no followups
+                logger.warning("[SQL STREAM] Followups marker not found in response")
+                final_answer = full_response.strip()
+                followup_questions = []
+
+            # Store the followups as a pseudo-attribute for the stream generator to access
+            # (We'll handle this in the calling code by checking the generator's final state)
+            self._last_streamed_followups = followup_questions
 
             # Add overflow warning if results were truncated
             if metadata.get('truncated', False) and rows_returned >= max_rows:
@@ -1087,6 +1303,7 @@ FORMATTED ANSWER:"""
             logger.error(f"[SQL STREAM ERROR] Error formatting results: {e}", exc_info=True)
             # Fallback to simple formatting (non-streaming)
             yield self._simple_format_results(user_query, results, metadata)
+            self._last_streamed_followups = []
             await asyncio.sleep(0)
 
     def _simple_format_results(
@@ -1166,28 +1383,40 @@ FORMATTED ANSWER:"""
             ]
 
         # Build context from results for more relevant suggestions
+        # Extract ALL person names from results (employee + supervisor/manager)
         result_summary = []
-        for i, result in enumerate(results[:3], 1):  # Only use first 3 results for context
-            name = None
-            if 'FirstName' in result and 'LastName' in result:
-                first = result.get('FirstName', '')
-                last = result.get('LastName', '')
-                if first or last:
-                    name = f"{first} {last}".strip()
+        all_people_names = []  # Collect all unique names
+
+        for result in results[:3]:  # Only use first 3 results for context
+            # Extract all person names from this result
+            names = self._extract_all_person_names(result)
+            all_people_names.extend(names)
 
             title = result.get('BusinessTitle', '')
             dept = result.get('HomeDept', '')
 
-            summary = f"Result {i}:"
-            if name:
-                summary += f" {name}"
+            # Build summary with all names found in this result
+            summary_parts = []
+            if names:
+                summary_parts.append(", ".join(names))
             if title:
-                summary += f", {title}"
+                summary_parts.append(title)
             if dept:
-                summary += f" in {dept}"
-            result_summary.append(summary)
+                summary_parts.append(f"in {dept}")
+
+            if summary_parts:
+                result_summary.append(", ".join(summary_parts))
+
+        # Remove duplicate names while preserving order
+        seen = set()
+        unique_people_names = []
+        for name in all_people_names:
+            if name not in seen:
+                seen.add(name)
+                unique_people_names.append(name)
 
         context_text = "\n".join(result_summary) if result_summary else "Employee information"
+        people_list = ", ".join(unique_people_names) if unique_people_names else "people in results"
 
         prompt = f"""You are helping generate follow-up questions for an employee directory query system.
 
@@ -1196,20 +1425,24 @@ ORIGINAL QUESTION: {user_query}
 RESULTS SUMMARY:
 {context_text}
 
+PEOPLE MENTIONED IN RESULTS: {people_list}
+(These are the ACTUAL NAMES you MUST use - NEVER use placeholders like "[reporting manager]" or "[supervisor]"!)
+
 Generate 2-3 natural, conversational follow-up questions that a user might want to ask based on these results.
 
-RULES:
+CRITICAL RULES:
 1. Questions should be SHORT and SPECIFIC (5-10 words max)
-2. Questions should be directly related to the people/results returned
-3. Use natural language (no overly formal phrasing)
-4. Common follow-up types:
+2. ALWAYS use the ACTUAL PERSON'S NAME from "PEOPLE MENTIONED IN RESULTS" above (e.g., "John Smith", "Jane Doe")
+3. NEVER use generic terms like "Result 1", "Result 2", "[reporting manager]", "[supervisor]", "the person", "this employee"
+4. Use natural language (no overly formal phrasing)
+5. Common follow-up types:
    - Contact information: "What is [name]'s email?" or "What is [name]'s phone number?"
    - Location: "Where does [name] sit?" or "What building is [name] in?"
    - Reporting structure: "Who does [name] report to?" or "Who reports to [name]?"
    - Team information: "Who else is in [department]?" or "List [name]'s direct reports"
    - Role details: "What is [name]'s full title?" or "When did [name] start?"
-5. If the result shows a title like "Director" or "Manager", suggest questions about their team or department
-6. Return ONLY the questions, one per line, no numbering, no explanations
+6. If the result shows a title like "Director" or "Manager", suggest questions about their team or department
+7. Return ONLY the questions, one per line, no numbering, no explanations
 
 EXAMPLES:
 
@@ -1228,11 +1461,14 @@ What is Jane Doe's contact information?
 List all employees in OPS-001
 
 Original: "List employees in Engineering"
-Results: 15 employees
+Results: Bob Johnson, Senior Engineer in ENGR-001
+Alice Williams, Manager in ENGR-001
 Follow-ups:
-Show managers in Engineering
-Who is the director of Engineering?
-Filter by seniority level
+What is Bob Johnson's email?
+Who reports to Alice Williams?
+Show all staff in ENGR-001
+
+IMPORTANT: Use actual names from the results, NOT "Result 1" or generic references!
 
 Now generate follow-up questions:"""
 
