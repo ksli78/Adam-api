@@ -75,6 +75,16 @@ class ConversationManager:
                 ON messages(conversation_id, timestamp)
             """)
 
+            # Migration: Add context_data column if it doesn't exist (for existing databases)
+            try:
+                cursor.execute("SELECT context_data FROM conversations LIMIT 1")
+            except sqlite3.OperationalError:
+                # Column doesn't exist, add it
+                logger.info("Adding context_data column to conversations table (migration)")
+                cursor.execute("ALTER TABLE conversations ADD COLUMN context_data TEXT")
+                conn.commit()
+                logger.info("Migration completed: context_data column added")
+
             conn.commit()
             logger.info("Database tables initialized")
 
