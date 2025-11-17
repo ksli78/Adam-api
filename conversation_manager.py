@@ -49,7 +49,8 @@ class ConversationManager:
                     conversation_id TEXT PRIMARY KEY,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_message_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    message_count INTEGER DEFAULT 0
+                    message_count INTEGER DEFAULT 0,
+                    context_data TEXT
                 )
             """)
 
@@ -355,6 +356,84 @@ class ConversationManager:
             conn.commit()
 
         logger.info(f"Cleaned up {deleted} old conversations")
+
+    def update_context(self, conversation_id: str, new_subject: Dict[str, Any], query_type: str):
+        """
+        Update the current subject and maintain conversation chain.
+
+        Args:
+            conversation_id: Conversation ID
+            new_subject: Dict with subject info (name, empno, role, etc.)
+            query_type: Type of query (e.g., 'manager_lookup', 'employee_lookup')
+        """
+        # Get existing context
+        existing = self.get_structured_context(conversation_id)
+
+        # Build updated context
+        updated_context = {
+            "current_subject": new_subject,
+            "previous_subjects": [],
+            "query_history": existing.get("query_history", []) + [query_type]
+        }
+
+        # Move current subject to previous (if exists)
+        if existing and existing.get("current_subject"):
+            updated_context["previous_subjects"].append(existing["current_subject"])
+
+        # Add existing previous subjects (keep last 2)
+        if existing and existing.get("previous_subjects"):
+            updated_context["previous_subjects"].extend(existing["previous_subjects"][:2])
+
+        # Store updated context in database
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE conversations
+                SET context_data = ?
+                WHERE conversation_id = ?
+            """, (json.dumps(updated_context), conversation_id))
+            conn.commit()
+
+        logger.info(f"Updated context for conversation {conversation_id}: current subject = {new_subject.get('name', 'unknown')}")
+
+    def get_structured_context(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get the structured context for a conversation.
+
+        Returns:
+            Dict with current_subject, previous_subjects, query_history or None
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT context_data
+                FROM conversations
+                WHERE conversation_id = ?
+            """, (conversation_id,))
+
+            row = cursor.fetchone()
+
+            if not row or not row["context_data"]:
+                return None
+
+            try:
+                context = json.loads(row["context_data"])
+                return context
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(f"Failed to parse context_data for conversation {conversation_id}")
+                return None
+
+    def get_current_subject(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get the current subject of conversation (most recently returned person).
+
+        Returns:
+            Dict with subject info (name, empno, role) or None
+        """
+        context = self.get_structured_context(conversation_id)
+        return context.get("current_subject") if context else None
 
 
 # Singleton instance

@@ -420,32 +420,312 @@ class SQLQueryHandler:
         where_clause = " AND ".join(or_clauses)
 
         # Build complete SQL
-        sql = f"SELECT TOP 1000 FirstName, LastName, BusinessTitle, HomeDept, Email, WorkPhone, BuildingCode, Room FROM vwPersonnelAll WHERE {where_clause} AND IsTerminated = 0"
+        sql = f"SELECT TOP 1000 FirstName, LastName, BusinessTitle, HomeDept, Email, WorkPhone, BuildingCode, Room, EmpNo FROM vwPersonnelAll WHERE {where_clause} AND IsTerminated = 0"
 
         logger.info(f"[TIER 1] Generated smart SQL: {sql}")
+        return sql
+
+    def _detect_manager_query(self, query: str, conversation_context: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        Detect if query is asking for someone's manager/boss/supervisor.
+
+        Patterns:
+        - "Who is [NAME]'s boss/manager/supervisor"
+        - "Who does [NAME] report to"
+        - "And who is his/her/their boss" (with context)
+
+        Args:
+            query: User's query
+            conversation_context: Structured conversation context
+
+        Returns:
+            True if this is a manager lookup query
+        """
+        query_lower = query.lower()
+
+        # Common patterns for manager queries
+        manager_patterns = [
+            r"who\s+(is|was)\s+.*(boss|manager|supervisor)",
+            r"who\s+does\s+.*report\s+to",
+            r".*(his|her|their)\s+(boss|manager|supervisor)",
+            r"(boss|manager|supervisor)\s+of\s+",
+        ]
+
+        for pattern in manager_patterns:
+            if re.search(pattern, query_lower):
+                logger.debug(f"Detected manager query pattern: {pattern}")
+                return True
+
+        return False
+
+    def _extract_employee_name_from_query(self, query: str, conversation_context: Optional[Dict[str, Any]] = None) -> Optional[Tuple[str, Optional[str]]]:
+        """
+        Extract employee name from query, handling pronouns via context.
+
+        Args:
+            query: User's query
+            conversation_context: Structured conversation context
+
+        Returns:
+            Tuple of (full_name, empno) or (None, None) if can't extract
+        """
+        query_lower = query.lower()
+
+        # Check for pronouns (his, her, their, he, she)
+        has_pronoun = any(pronoun in query_lower for pronoun in ['his ', 'her ', 'their ', ' he ', ' she '])
+
+        if has_pronoun and conversation_context:
+            # Get current subject from context
+            current = conversation_context.get('current_subject')
+            if current:
+                name = current.get('name')
+                empno = current.get('empno')
+                if name:
+                    logger.info(f"[SMART MANAGER] Resolved pronoun to current subject: {name} (EmpNo: {empno})")
+                    return (name, empno)
+
+        # Try to extract explicit name from query
+        # Pattern: "Who is [FirstName] [LastName]'s boss"
+        # Or: "Who does [FirstName] [LastName] report to"
+
+        # Remove common question words
+        cleaned = query_lower
+        for word in ['who', 'is', 'was', 'does', 'do', 'what', 'the', 'a', 'an']:
+            cleaned = cleaned.replace(f' {word} ', ' ')
+
+        # Look for name patterns (2-3 consecutive capitalized words in original query)
+        words = query.split()
+        for i in range(len(words) - 1):
+            if words[i][0].isupper() and words[i+1][0].isupper():
+                # Found potential name
+                first_name = words[i]
+                last_name = words[i+1]
+                # Clean up possessive
+                last_name = last_name.rstrip("'s").rstrip("'")
+                full_name = f"{first_name} {last_name}"
+                logger.info(f"[SMART MANAGER] Extracted name from query: {full_name}")
+                return (full_name, None)
+
+        logger.warning("[SMART MANAGER] Could not extract employee name from query")
+        return (None, None)
+
+    def _build_smart_manager_sql(self, user_query: str, conversation_context: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        """
+        Build SQL for manager/boss queries using context awareness.
+
+        Process:
+        1. Extract employee name (from query or context)
+        2. Use EmpNo if available (more reliable)
+        3. Generate SQL to find manager via SupervisorNo
+
+        Args:
+            user_query: Original user query
+            conversation_context: Structured conversation context
+
+        Returns:
+            SQL query string or None if can't generate
+        """
+        # Extract employee name and EmpNo
+        name, empno = self._extract_employee_name_from_query(user_query, conversation_context)
+
+        if not name and not empno:
+            logger.warning("[SMART MANAGER] Cannot build manager SQL without employee name or ID")
+            return None
+
+        # Build SQL based on what we have
+        if empno:
+            # Use EmpNo for precise lookup (most reliable)
+            sql = f"""
+                SELECT TOP 1
+                    m.FirstName, m.LastName, m.Email, m.CompanyEmail,
+                    m.WorkPhone, m.BusinessTitle, m.HomeDept,
+                    m.BuildingCode, m.Room, m.EmpNo
+                FROM vwPersonnelAll e
+                INNER JOIN vwPersonnelAll m ON e.SupervisorNo = m.EmpNo
+                WHERE e.EmpNo = '{empno}'
+                AND e.IsTerminated = 0
+                AND m.IsTerminated = 0
+            """.strip().replace('\n', ' ').replace('  ', ' ')
+
+            logger.info(f"[SMART MANAGER] Generated SQL using EmpNo: {empno}")
+        else:
+            # Use name-based lookup (less reliable but works)
+            name_parts = name.split()
+            if len(name_parts) >= 2:
+                first_name = name_parts[0]
+                last_name = name_parts[-1]  # Last word is last name
+
+                sql = f"""
+                    SELECT TOP 1
+                        m.FirstName, m.LastName, m.Email, m.CompanyEmail,
+                        m.WorkPhone, m.BusinessTitle, m.HomeDept,
+                        m.BuildingCode, m.Room, m.EmpNo
+                    FROM vwPersonnelAll e
+                    INNER JOIN vwPersonnelAll m ON e.SupervisorNo = m.EmpNo
+                    WHERE (e.FirstName LIKE '%{first_name}%' AND e.LastName LIKE '%{last_name}%')
+                    AND e.IsTerminated = 0
+                    AND m.IsTerminated = 0
+                """.strip().replace('\n', ' ').replace('  ', ' ')
+
+                logger.info(f"[SMART MANAGER] Generated SQL using name: {name}")
+            else:
+                logger.warning(f"[SMART MANAGER] Name '{name}' doesn't have enough parts")
+                return None
+
+        logger.info(f"[SMART MANAGER SQL] {sql}")
+        return sql
+
+    def _detect_direct_reports_query(self, query: str, conversation_context: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        Detect if query is asking for someone's direct reports/team.
+
+        Patterns:
+        - "Who reports to [NAME]"
+        - "[NAME]'s direct reports"
+        - "Who works for [NAME]"
+        - "Show [NAME]'s team"
+
+        Args:
+            query: User's query
+            conversation_context: Structured conversation context
+
+        Returns:
+            True if this is a direct reports query
+        """
+        query_lower = query.lower()
+
+        # Common patterns for direct reports queries
+        reports_patterns = [
+            r"who\s+reports\s+to\s+",
+            r"direct\s+reports",
+            r"who\s+works\s+for\s+",
+            r"(his|her|their)\s+team",
+            r"(his|her|their)\s+direct\s+reports",
+            r"(his|her|their)\s+staff",
+        ]
+
+        for pattern in reports_patterns:
+            if re.search(pattern, query_lower):
+                logger.debug(f"Detected direct reports query pattern: {pattern}")
+                return True
+
+        return False
+
+    def _build_smart_direct_reports_sql(self, user_query: str, conversation_context: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        """
+        Build SQL for direct reports queries using context awareness.
+
+        Process:
+        1. Extract manager name (from query or context)
+        2. Use EmpNo if available (more reliable)
+        3. Generate SQL to find direct reports
+
+        Args:
+            user_query: Original user query
+            conversation_context: Structured conversation context
+
+        Returns:
+            SQL query string or None if can't generate
+        """
+        # Extract manager name and EmpNo
+        name, empno = self._extract_employee_name_from_query(user_query, conversation_context)
+
+        if not name and not empno:
+            logger.warning("[SMART REPORTS] Cannot build direct reports SQL without manager name or ID")
+            return None
+
+        # Build SQL based on what we have
+        if empno:
+            # Use EmpNo for precise lookup (most reliable)
+            sql = f"""
+                SELECT TOP 1000
+                    FirstName, LastName, Email, CompanyEmail,
+                    WorkPhone, BusinessTitle, HomeDept,
+                    BuildingCode, Room, EmpNo
+                FROM vwPersonnelAll
+                WHERE SupervisorNo = '{empno}'
+                AND IsTerminated = 0
+                ORDER BY LastName, FirstName
+            """.strip().replace('\n', ' ').replace('  ', ' ')
+
+            logger.info(f"[SMART REPORTS] Generated SQL using EmpNo: {empno}")
+        else:
+            # Use name-based lookup (subquery to get EmpNo first)
+            name_parts = name.split()
+            if len(name_parts) >= 2:
+                first_name = name_parts[0]
+                last_name = name_parts[-1]  # Last word is last name
+
+                sql = f"""
+                    SELECT TOP 1000
+                        FirstName, LastName, Email, CompanyEmail,
+                        WorkPhone, BusinessTitle, HomeDept,
+                        BuildingCode, Room, EmpNo
+                    FROM vwPersonnelAll
+                    WHERE SupervisorNo = (
+                        SELECT TOP 1 EmpNo FROM vwPersonnelAll
+                        WHERE FirstName LIKE '%{first_name}%' AND LastName LIKE '%{last_name}%'
+                        AND IsTerminated = 0
+                    )
+                    AND IsTerminated = 0
+                    ORDER BY LastName, FirstName
+                """.strip().replace('\n', ' ').replace('  ', ' ')
+
+                logger.info(f"[SMART REPORTS] Generated SQL using name: {name}")
+            else:
+                logger.warning(f"[SMART REPORTS] Name '{name}' doesn't have enough parts")
+                return None
+
+        logger.info(f"[SMART REPORTS SQL] {sql}")
         return sql
 
     async def generate_sql(
         self,
         user_query: str,
-        conversation_context: Optional[str] = None
+        conversation_context: Optional[str] = None,
+        structured_context: Optional[Dict[str, Any]] = None
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Generate SQL query from natural language.
 
-        Uses smart title search for "Who is the [TITLE]" queries,
-        falls back to LLM for other query types.
+        Uses smart patterns for common queries (title search, manager lookup),
+        falls back to LLM for complex query types.
 
         Args:
             user_query: User's natural language query
-            conversation_context: Optional conversation history for follow-up questions
+            conversation_context: Optional conversation history string for LLM
+            structured_context: Optional structured context with current subject
 
         Returns:
             Tuple of (sql_query, metadata)
         """
         logger.info(f"Generating SQL for query: {user_query}")
 
-        # Try smart title search first (for "Who is the [TITLE]" queries)
+        # Try smart manager/boss query first (highest priority for follow-ups)
+        if self._detect_manager_query(user_query, structured_context):
+            logger.info("[SMART MANAGER] Detected manager/boss query")
+            smart_sql = self._build_smart_manager_sql(user_query, structured_context)
+
+            if smart_sql:
+                logger.info(f"[SMART MANAGER] Using smart SQL generation")
+                return smart_sql, {"method": "smart_manager_search", "temperature": None}
+
+            # If smart SQL generation failed, fall through to LLM
+            logger.warning("[SMART MANAGER] Failed to generate smart SQL, falling back to LLM")
+
+        # Try smart direct reports query
+        if self._detect_direct_reports_query(user_query, structured_context):
+            logger.info("[SMART REPORTS] Detected direct reports query")
+            smart_sql = self._build_smart_direct_reports_sql(user_query, structured_context)
+
+            if smart_sql:
+                logger.info(f"[SMART REPORTS] Using smart SQL generation")
+                return smart_sql, {"method": "smart_reports_search", "temperature": None}
+
+            # If smart SQL generation failed, fall through to LLM
+            logger.warning("[SMART REPORTS] Failed to generate smart SQL, falling back to LLM")
+
+        # Try smart title search (for "Who is the [TITLE]" queries)
         if self._detect_title_search(user_query):
             logger.info("[SMART SEARCH] Detected title-based query")
             normalized_query = self._normalize_query(user_query)
@@ -497,45 +777,73 @@ class SQLQueryHandler:
             "- 'location' or 'where does X sit' = FirstName, LastName, BuildingCode, Room, OnOffSite",
             "- 'phone' = FirstName, LastName, WorkPhone",
             "- 'email' = FirstName, LastName, Email or CompanyEmail",
-            "- 'who does X report to' or 'X's manager/supervisor' = Use LEFT JOIN with SupervisorNo = EmpNo",
-            "- 'who reports to X' or 'X's direct reports' = Use INNER JOIN with employee.SupervisorNo = manager.EmpNo",
+            "- 'who does X report to' or 'X's manager/supervisor' = Use INNER JOIN with e.SupervisorNo = m.EmpNo",
+            "- 'who reports to X' or 'X's direct reports' = Filter WHERE SupervisorNo = (SELECT EmpNo FROM...)",
             "\nJOIN SYNTAX:",
-            "- Use table aliases: FROM vwPersonnelAll e LEFT JOIN vwPersonnelAll s ON e.SupervisorNo = s.EmpNo",
+            "- Use table aliases: FROM vwPersonnelAll e INNER JOIN vwPersonnelAll m ON e.SupervisorNo = m.EmpNo",
             "- Concatenate names: e.FirstName + ' ' + e.LastName as Employee",
             "- Check IsTerminated = 0 for BOTH tables in joins",
-            f"\nEXAMPLE QUERIES:\n{examples}"
+            "- ALWAYS include EmpNo in SELECT for accurate context tracking in follow-ups",
+            "\nRELATIONSHIP QUERY EXAMPLES:",
+            "Example 1: 'Who is John Smith's manager?'",
+            "SELECT TOP 1 m.FirstName, m.LastName, m.Email, m.BusinessTitle, m.HomeDept, m.WorkPhone, m.EmpNo",
+            "FROM vwPersonnelAll e INNER JOIN vwPersonnelAll m ON e.SupervisorNo = m.EmpNo",
+            "WHERE e.FirstName LIKE '%John%' AND e.LastName LIKE '%Smith%' AND e.IsTerminated = 0 AND m.IsTerminated = 0",
+            "",
+            "Example 2: 'Who reports to Jane Doe?'",
+            "SELECT TOP 1000 FirstName, LastName, Email, BusinessTitle, HomeDept, WorkPhone, EmpNo",
+            "FROM vwPersonnelAll",
+            "WHERE SupervisorNo = (SELECT TOP 1 EmpNo FROM vwPersonnelAll WHERE FirstName LIKE '%Jane%' AND LastName LIKE '%Doe%' AND IsTerminated = 0)",
+            "AND IsTerminated = 0 ORDER BY LastName, FirstName",
+            "",
+            "Example 3: 'What is the reporting chain for Bob Johnson?'",
+            "SELECT TOP 10 e.FirstName + ' ' + e.LastName as Employee, m.FirstName + ' ' + m.LastName as Manager, m.BusinessTitle",
+            "FROM vwPersonnelAll e LEFT JOIN vwPersonnelAll m ON e.SupervisorNo = m.EmpNo",
+            "WHERE e.FirstName LIKE '%Bob%' AND e.LastName LIKE '%Johnson%' AND e.IsTerminated = 0",
+            f"\nADDITIONAL EXAMPLES:\n{examples}"
         ]
+
+        # Add structured context information if available
+        if structured_context and structured_context.get('current_subject'):
+            current = structured_context['current_subject']
+            context_info = f"\nCURRENT CONVERSATION SUBJECT: {current.get('name', 'unknown')}"
+            if current.get('empno'):
+                context_info += f" (EmpNo: {current['empno']})"
+            prompt_parts.insert(1, context_info)
 
         if conversation_context:
             prompt_parts.insert(1, f"\nCONVERSATION HISTORY:\n{conversation_context}")
             prompt_parts.append("\nFOLLOW-UP QUERY RULES:")
-            prompt_parts.append("1. PRIORITY: If the question explicitly mentions a person's name, use that name (ignore pronouns)")
-            prompt_parts.append("   Example: 'When did Khaled get hired?' → Use 'Khaled' even if context has multiple people")
-            prompt_parts.append("2. CRITICAL: Pronouns (he, she, his, her, him, his, hers, they, their) are NOT names!")
-            prompt_parts.append("   NEVER search for pronouns as literal names in WHERE clauses")
-            prompt_parts.append("   BAD: WHERE FirstName LIKE '%her%' ← Searching for name 'her' - WRONG!")
-            prompt_parts.append("   GOOD: Use context to find the actual person's name")
-            prompt_parts.append("3. For pronoun references, determine WHO from conversation context:")
-            prompt_parts.append("   - Context shows: [Employee: Khaled Sliman | Manager: Colly Edgeworth]")
-            prompt_parts.append("   - Previous answer was about Colly (the manager)")
-            prompt_parts.append("   - 'her' or 'she' = Colly Edgeworth")
-            prompt_parts.append("   - Use: WHERE (FirstName LIKE '%Colly%' AND LastName LIKE '%Edgeworth%')")
-            prompt_parts.append("4. Determine WHO based on conversation flow:")
-            prompt_parts.append("   - If previous Q was 'Who is X's boss?', then 'her department' = Boss's department")
-            prompt_parts.append("   - If previous Q was 'Who reports to X?', then 'their info' = Employees' info")
-            prompt_parts.append("5. Extract actual names from context, NEVER use pronouns in SQL")
-            prompt_parts.append("6. NEVER use UserName field in WHERE clauses - ONLY use FirstName, LastName, or EmpNo")
-            prompt_parts.append("\nEXAMPLES:")
-            prompt_parts.append("Context: [Employee: Khaled Sliman | Manager: Colly Edgeworth]")
-            prompt_parts.append("Previous Q: 'Who is Khaled's boss?' Answer: '...Colly Edgeworth...'")
-            prompt_parts.append("Q: 'What is her department?' ← 'her' is a PRONOUN referring to Colly")
-            prompt_parts.append("BAD SQL: WHERE FirstName LIKE '%her%' ← NO! Don't search for 'her' as a name!")
-            prompt_parts.append("GOOD SQL: SELECT TOP 1000 FirstName, LastName, HomeDept FROM vwPersonnelAll WHERE (FirstName LIKE '%Colly%' AND LastName LIKE '%Edgeworth%') AND IsTerminated = 0")
+            prompt_parts.append("1. CRITICAL: The CURRENT SUBJECT is the person most recently discussed/returned in results")
+            prompt_parts.append("   Example flow: Q1: 'Who is John?' → Returns John (John is now current subject)")
+            prompt_parts.append("                 Q2: 'Who is his boss?' → Returns Jane (Jane is now current subject)")
+            prompt_parts.append("                 Q3: 'And who is her boss?' → Use JANE's info (not John's!)")
+            prompt_parts.append("2. PRIORITY: If question explicitly mentions a name, use that name (overrides current subject)")
+            prompt_parts.append("   Example: 'When did Khaled get hired?' → Use Khaled, even if current subject is someone else")
+            prompt_parts.append("3. Pronouns (he, she, his, her, their) refer to CURRENT SUBJECT from structured context")
+            prompt_parts.append("   - Check CURRENT CONVERSATION SUBJECT field above for the person's name and EmpNo")
+            prompt_parts.append("   - ALWAYS prefer using EmpNo for WHERE clauses when available (more accurate)")
+            prompt_parts.append("   - BAD: WHERE FirstName LIKE '%her%' ← NEVER search for pronoun as name!")
+            prompt_parts.append("   - GOOD: WHERE EmpNo = '12345' ← Use EmpNo from current subject")
+            prompt_parts.append("4. For relationship queries with pronouns:")
+            prompt_parts.append("   - 'his boss' or 'her manager' = Find manager of CURRENT SUBJECT")
+            prompt_parts.append("   - 'who reports to him' = Find direct reports of CURRENT SUBJECT")
+            prompt_parts.append("   - Use EmpNo from current subject whenever possible")
+            prompt_parts.append("5. NEVER use UserName field in WHERE clauses - ONLY use FirstName, LastName, or EmpNo")
+            prompt_parts.append("6. ALWAYS include EmpNo in SELECT to enable accurate context tracking")
+            prompt_parts.append("\nFOLLOW-UP EXAMPLES WITH CURRENT SUBJECT:")
+            prompt_parts.append("CURRENT SUBJECT: John Smith (EmpNo: 12345)")
+            prompt_parts.append("Q: 'Who is his boss?' ← 'his' refers to current subject (John)")
+            prompt_parts.append("GOOD SQL: SELECT TOP 1 m.FirstName, m.LastName, m.Email, m.BusinessTitle, m.EmpNo FROM vwPersonnelAll e INNER JOIN vwPersonnelAll m ON e.SupervisorNo = m.EmpNo WHERE e.EmpNo = '12345' AND e.IsTerminated = 0 AND m.IsTerminated = 0")
             prompt_parts.append("")
-            prompt_parts.append("Context: [Employee: Khaled Sliman | Manager: Colly Edgeworth]")
-            prompt_parts.append("Q: 'When did Khaled get hired?' ← Khaled explicitly mentioned!")
-            prompt_parts.append("→ Use Khaled (not Colly), include HireDate")
-            prompt_parts.append("→ SQL: SELECT TOP 1000 FirstName, LastName, HireDate FROM vwPersonnelAll WHERE (FirstName LIKE '%Khaled%' AND LastName LIKE '%Sliman%') AND IsTerminated = 0")
+            prompt_parts.append("After above query, result is: Jane Doe (EmpNo: 67890), so current subject is NOW Jane Doe")
+            prompt_parts.append("CURRENT SUBJECT: Jane Doe (EmpNo: 67890)")
+            prompt_parts.append("Q: 'And who is her boss?' ← 'her' refers to current subject (Jane, not John!)")
+            prompt_parts.append("GOOD SQL: SELECT TOP 1 m.FirstName, m.LastName, m.Email, m.BusinessTitle, m.EmpNo FROM vwPersonnelAll e INNER JOIN vwPersonnelAll m ON e.SupervisorNo = m.EmpNo WHERE e.EmpNo = '67890' AND e.IsTerminated = 0 AND m.IsTerminated = 0")
+            prompt_parts.append("")
+            prompt_parts.append("CURRENT SUBJECT: Sarah Johnson (EmpNo: 11111)")
+            prompt_parts.append("Q: 'Who reports to her?' ← 'her' refers to current subject (Sarah)")
+            prompt_parts.append("GOOD SQL: SELECT TOP 1000 FirstName, LastName, Email, BusinessTitle, EmpNo FROM vwPersonnelAll WHERE SupervisorNo = '11111' AND IsTerminated = 0 ORDER BY LastName, FirstName")
 
         prompt_parts.append(f"\nUSER QUESTION: {user_query}")
         prompt_parts.append("\nGENERATED SQL:")

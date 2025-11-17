@@ -93,11 +93,14 @@ async def query_employee_directory(request: SQLQueryRequest):
         if conv_limit_reached:
             logger.warning(f"Conversation {conversation_id} reached message limit")
 
-        # Get conversation context for follow-up questions
+        # Get conversation context for follow-up questions (string format for LLM)
         conversation_context = conversation_manager.get_conversation_context(
             conversation_id,
             max_messages=10
         )
+
+        # Get structured context for smart SQL generation
+        structured_context = conversation_manager.get_structured_context(conversation_id)
 
         # Add user message to conversation
         conversation_manager.add_message(
@@ -111,7 +114,8 @@ async def query_employee_directory(request: SQLQueryRequest):
         try:
             sql_query, sql_metadata = await sql_handler.generate_sql(
                 user_query=request.prompt,
-                conversation_context=conversation_context if conversation_context else None
+                conversation_context=conversation_context if conversation_context else None,
+                structured_context=structured_context
             )
             logger.info(f"Generated SQL for '{request.prompt}': {sql_query}")
         except ValueError as e:
@@ -202,6 +206,45 @@ async def query_employee_directory(request: SQLQueryRequest):
                 user_query=request.prompt,
                 results=results,
                 metadata=exec_metadata
+            )
+
+        # Step 4.5: Update current subject based on query results
+        # Determine query type and extract new subject
+        query_method = sql_metadata.get('method', 'llm')
+        new_subject = None
+
+        if results and len(results) > 0:
+            # For single result queries, the result becomes the new current subject
+            if len(results) == 1:
+                result = results[0]
+                employee_name = None
+                employee_id = None
+
+                # Extract employee info from result
+                if 'FirstName' in result and 'LastName' in result:
+                    first = result.get('FirstName', '')
+                    last = result.get('LastName', '')
+                    if first or last:
+                        employee_name = f"{first} {last}".strip()
+
+                if 'EmpNo' in result:
+                    employee_id = result.get('EmpNo')
+
+                if employee_name:
+                    new_subject = {
+                        "name": employee_name,
+                        "empno": employee_id,
+                        "role": "employee" if query_method != "smart_manager_search" else "manager",
+                        "query_type": query_method
+                    }
+                    logger.info(f"[CONTEXT UPDATE] New current subject: {employee_name} (EmpNo: {employee_id})")
+
+        # Update conversation context with new subject
+        if new_subject:
+            conversation_manager.update_context(
+                conversation_id=conversation_id,
+                new_subject=new_subject,
+                query_type=query_method
             )
 
         # Store assistant message in conversation
@@ -382,11 +425,14 @@ async def query_employee_directory_stream(request: SQLQueryRequest):
             if conv_limit_reached:
                 logger.warning(f"Conversation {conversation_id} reached message limit")
 
-            # Get conversation context for follow-up questions
+            # Get conversation context for follow-up questions (string format for LLM)
             conversation_context = conversation_manager.get_conversation_context(
                 conversation_id,
                 max_messages=10
             )
+
+            # Get structured context for smart SQL generation
+            structured_context = conversation_manager.get_structured_context(conversation_id)
 
             # Add user message to conversation
             conversation_manager.add_message(
@@ -403,7 +449,8 @@ async def query_employee_directory_stream(request: SQLQueryRequest):
             try:
                 sql_query, sql_metadata = await sql_handler.generate_sql(
                     user_query=request.prompt,
-                    conversation_context=conversation_context if conversation_context else None
+                    conversation_context=conversation_context if conversation_context else None,
+                    structured_context=structured_context
                 )
                 logger.info(f"Generated SQL for '{request.prompt}': {sql_query}")
             except ValueError as e:
@@ -479,6 +526,45 @@ async def query_employee_directory_stream(request: SQLQueryRequest):
                 # Yield each token
                 yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
                 await asyncio.sleep(0)
+
+            # Step 4.5: Update current subject based on query results
+            # Determine query type and extract new subject
+            query_method = sql_metadata.get('method', 'llm')
+            new_subject = None
+
+            if results and len(results) > 0:
+                # For single result queries, the result becomes the new current subject
+                if len(results) == 1:
+                    result = results[0]
+                    employee_name = None
+                    employee_id = None
+
+                    # Extract employee info from result
+                    if 'FirstName' in result and 'LastName' in result:
+                        first = result.get('FirstName', '')
+                        last = result.get('LastName', '')
+                        if first or last:
+                            employee_name = f"{first} {last}".strip()
+
+                    if 'EmpNo' in result:
+                        employee_id = result.get('EmpNo')
+
+                    if employee_name:
+                        new_subject = {
+                            "name": employee_name,
+                            "empno": employee_id,
+                            "role": "employee" if query_method != "smart_manager_search" else "manager",
+                            "query_type": query_method
+                        }
+                        logger.info(f"[STREAM CONTEXT UPDATE] New current subject: {employee_name} (EmpNo: {employee_id})")
+
+            # Update conversation context with new subject
+            if new_subject:
+                conversation_manager.update_context(
+                    conversation_id=conversation_id,
+                    new_subject=new_subject,
+                    query_type=query_method
+                )
 
             # Store assistant message in conversation (same as non-streaming version)
             conversation_content = full_answer
