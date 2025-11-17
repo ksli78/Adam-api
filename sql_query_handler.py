@@ -474,15 +474,22 @@ class SQLQueryHandler:
         # Check for pronouns (his, her, their, he, she)
         has_pronoun = any(pronoun in query_lower for pronoun in ['his ', 'her ', 'their ', ' he ', ' she '])
 
-        if has_pronoun and conversation_context:
-            # Get current subject from context
-            current = conversation_context.get('current_subject')
-            if current:
-                name = current.get('name')
-                empno = current.get('empno')
-                if name:
-                    logger.info(f"[SMART MANAGER] Resolved pronoun to current subject: {name} (EmpNo: {empno})")
-                    return (name, empno)
+        if has_pronoun:
+            if not conversation_context:
+                logger.warning(f"[SMART MANAGER] Query contains pronoun but NO conversation context provided!")
+                logger.warning(f"[SMART MANAGER] This usually means conversation_id was not passed from frontend")
+                logger.warning(f"[SMART MANAGER] Cannot resolve pronoun without context - will fail")
+            else:
+                # Get current subject from context
+                current = conversation_context.get('current_subject')
+                if current:
+                    name = current.get('name')
+                    empno = current.get('empno')
+                    if name:
+                        logger.info(f"[SMART MANAGER] Resolved pronoun to current subject: {name} (EmpNo: {empno})")
+                        return (name, empno)
+                else:
+                    logger.warning(f"[SMART MANAGER] Context exists but has no current_subject - context may be empty")
 
         # Try to extract explicit name from query
         # Pattern: "Who is [FirstName] [LastName]'s boss"
