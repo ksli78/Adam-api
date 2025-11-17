@@ -383,7 +383,7 @@ class ConversationManager:
         updated_context = {
             "current_subject": new_subject,
             "previous_subjects": [],
-            "query_history": existing.get("query_history", []) + [query_type]
+            "query_history": (existing.get("query_history", []) if existing else []) + [query_type]
         }
 
         # Move current subject to previous (if exists)
