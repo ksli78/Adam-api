@@ -892,6 +892,28 @@ class SQLQueryHandler:
                     # Remove trailing semicolon if present
                     sql = sql.rstrip(';').strip()
 
+            # CRITICAL: Ensure EmpNo is always included in SELECT for context tracking
+            # Check if EmpNo is missing from SELECT statement
+            sql_upper = sql.upper()
+            if 'SELECT' in sql_upper and 'EMPNO' not in sql_upper:
+                # Find the FROM clause
+                from_index = sql_upper.find(' FROM ')
+                if from_index > 0:
+                    # Extract SELECT clause
+                    select_clause = sql[:from_index]
+                    from_clause = sql[from_index:]
+
+                    # Add EmpNo before FROM
+                    # Handle both "SELECT TOP N ..." and "SELECT ..."
+                    if ', ' in select_clause or 'TOP' in sql_upper:
+                        # Add EmpNo to the column list
+                        sql = select_clause + ', EmpNo' + from_clause
+                        logger.info("[SQL FIX] Added missing EmpNo to SELECT clause for context tracking")
+                    else:
+                        # Single column select, add EmpNo
+                        sql = select_clause + ', EmpNo' + from_clause
+                        logger.info("[SQL FIX] Added missing EmpNo to SELECT clause for context tracking")
+
             logger.info(f"Generated SQL: {sql}")
 
             return sql, {"model": self.model_name, "temperature": 0.1}
