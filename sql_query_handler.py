@@ -816,6 +816,16 @@ class SQLQueryHandler:
             context_info = f"\nCURRENT CONVERSATION SUBJECT: {current.get('name', 'unknown')}"
             if current.get('empno'):
                 context_info += f" (EmpNo: {current['empno']})"
+
+            # Also include previous subjects so LLM can reference them when user says "going back to X"
+            previous = structured_context.get('previous_subjects', [])
+            if previous:
+                context_info += "\n\nPREVIOUS SUBJECTS IN THIS CONVERSATION:"
+                for prev in previous[:3]:  # Include up to 3 previous subjects
+                    prev_name = prev.get('name', 'unknown')
+                    prev_empno = prev.get('empno', 'N/A')
+                    context_info += f"\n  - {prev_name} (EmpNo: {prev_empno})"
+
             prompt_parts.insert(1, context_info)
 
         if conversation_context:
@@ -827,6 +837,9 @@ class SQLQueryHandler:
             prompt_parts.append("                 Q3: 'And who is her boss?' → Use JANE's info (not John's!)")
             prompt_parts.append("2. PRIORITY: If question explicitly mentions a name, use that name (overrides current subject)")
             prompt_parts.append("   Example: 'When did Khaled get hired?' → Use Khaled, even if current subject is someone else")
+            prompt_parts.append("   Example: 'Going back to John, how many...' → Use John's EmpNo from PREVIOUS SUBJECTS list")
+            prompt_parts.append("   IMPORTANT: Check both CURRENT SUBJECT and PREVIOUS SUBJECTS for the person's EmpNo!")
+            prompt_parts.append("   NEVER make up employee numbers - use the EmpNo from context or lookup by name")
             prompt_parts.append("3. Pronouns (he, she, his, her, their) refer to CURRENT SUBJECT from structured context")
             prompt_parts.append("   - Check CURRENT CONVERSATION SUBJECT field above for the person's name and EmpNo")
             prompt_parts.append("   - ALWAYS prefer using EmpNo for WHERE clauses when available (more accurate)")
@@ -851,6 +864,15 @@ class SQLQueryHandler:
             prompt_parts.append("CURRENT SUBJECT: Sarah Johnson (EmpNo: 11111)")
             prompt_parts.append("Q: 'Who reports to her?' ← 'her' refers to current subject (Sarah)")
             prompt_parts.append("GOOD SQL: SELECT TOP 1000 FirstName, LastName, Email, BusinessTitle, EmpNo FROM vwPersonnelAll WHERE SupervisorNo = '11111' AND IsTerminated = 0 ORDER BY LastName, FirstName")
+            prompt_parts.append("")
+            prompt_parts.append("EXAMPLE WITH PREVIOUS SUBJECTS:")
+            prompt_parts.append("CURRENT SUBJECT: Mark Parkinson (EmpNo: 26501)")
+            prompt_parts.append("PREVIOUS SUBJECTS: Hani Dean (EmpNo: 52944), Khaled Sliman (EmpNo: 58576)")
+            prompt_parts.append("Q: 'Going back to Hani, how many people report to him?'")
+            prompt_parts.append("GOOD SQL: SELECT COUNT(*) FROM vwPersonnelAll WHERE SupervisorNo = '52944' AND IsTerminated = 0")
+            prompt_parts.append("^ Used Hani's EmpNo from PREVIOUS SUBJECTS list, not current subject!")
+            prompt_parts.append("BAD SQL: SELECT COUNT(*) FROM vwPersonnelAll WHERE SupervisorNo = '12345' AND IsTerminated = 0")
+            prompt_parts.append("^ WRONG! Made up employee number instead of using Hani's real EmpNo from context!")
 
         prompt_parts.append(f"\nUSER QUESTION: {user_query}")
         prompt_parts.append("\nGENERATED SQL:")
