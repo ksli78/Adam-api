@@ -398,6 +398,7 @@ async def query_employee_directory_stream(request: SQLQueryRequest):
         """Generate SSE stream for SQL query."""
         try:
             logger.info(f"[SQL STREAM] Employee directory query: {request.prompt}")
+            logger.info(f"[SQL STREAM] Request conversation_id: {request.conversation_id}")
 
             # Yield initial status
             yield f"data: {json.dumps({'type': 'status', 'message': 'Generating SQL query...'})}\n\n"
@@ -415,6 +416,8 @@ async def query_employee_directory_stream(request: SQLQueryRequest):
             if not conversation_id:
                 conversation_id = conversation_manager.create_conversation()
                 logger.info(f"Created new conversation: {conversation_id}")
+            else:
+                logger.info(f"Reusing existing conversation: {conversation_id}")
 
             # Check if conversation limit reached
             conv_limit_reached = conversation_manager.should_start_new_conversation(
