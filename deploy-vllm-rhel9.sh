@@ -64,14 +64,20 @@ if ! systemctl is-active --quiet docker; then
 fi
 echo -e "${GREEN}✓ Docker is running${NC}"
 
-# Check if docker-compose is installed
-if ! command -v docker-compose &> /dev/null; then
-    echo -e "${YELLOW}⚠ docker-compose not found. Installing...${NC}"
+# Check for docker-compose (v1) or docker compose (v2 plugin)
+COMPOSE_CMD=""
+if docker compose version &> /dev/null; then
+    COMPOSE_CMD="docker compose"
+    echo -e "${GREEN}✓ docker compose (plugin) is available${NC}"
+elif command -v docker-compose &> /dev/null; then
+    COMPOSE_CMD="docker-compose"
+    echo -e "${GREEN}✓ docker-compose (standalone) is available${NC}"
+else
+    echo -e "${YELLOW}⚠ docker-compose not found. Installing standalone version...${NC}"
     curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
     chmod +x /usr/local/bin/docker-compose
+    COMPOSE_CMD="docker-compose"
     echo -e "${GREEN}✓ docker-compose installed${NC}"
-else
-    echo -e "${GREEN}✓ docker-compose is installed${NC}"
 fi
 
 # Check for NVIDIA drivers
@@ -157,11 +163,11 @@ echo ""
 # Stop any existing vLLM container
 if docker ps -a | grep -q vllm-server; then
     echo "Stopping existing vLLM container..."
-    docker-compose -f docker-compose.vllm.yml down vllm
+    $COMPOSE_CMD -f docker-compose.vllm.yml down vllm
 fi
 
 # Start vLLM
-docker-compose -f docker-compose.vllm.yml up -d vllm
+$COMPOSE_CMD -f docker-compose.vllm.yml up -d vllm
 
 echo -e "${GREEN}✓ vLLM container started${NC}"
 echo ""
