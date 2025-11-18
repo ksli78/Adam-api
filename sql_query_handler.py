@@ -962,11 +962,21 @@ class SQLQueryHandler:
                 "error": "Only SELECT queries are allowed"
             }
 
-        # 3. Must have TOP clause for MS SQL Server
-        if 'TOP' not in sql_upper:
+        # 3. Must have TOP clause for MS SQL Server (unless it's an aggregate query)
+        # Aggregate queries (COUNT, SUM, AVG, etc.) return a single row and don't need TOP
+        is_aggregate_query = any(agg in sql_upper for agg in ['COUNT(', 'SUM(', 'AVG(', 'MIN(', 'MAX('])
+
+        if 'TOP' not in sql_upper and not is_aggregate_query:
             return {
                 "valid": False,
                 "error": f"Query must include TOP {self.security_config['max_rows']} clause"
+            }
+
+        # For aggregate queries, ensure they don't have GROUP BY without TOP (which could return many rows)
+        if is_aggregate_query and 'GROUP BY' in sql_upper and 'TOP' not in sql_upper:
+            return {
+                "valid": False,
+                "error": "Aggregate queries with GROUP BY must include TOP clause"
             }
 
         # 4. Check only allowed tables/views are referenced
