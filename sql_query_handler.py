@@ -902,7 +902,12 @@ class SQLQueryHandler:
             # CRITICAL: Ensure EmpNo is always included in SELECT for context tracking
             # Check if EmpNo is missing from SELECT statement
             sql_upper = sql.upper()
-            if 'SELECT' in sql_upper and 'EMPNO' not in sql_upper:
+
+            # Don't add EmpNo to aggregate queries (COUNT, SUM, AVG, etc.)
+            # as they have different SELECT semantics
+            is_aggregate = any(agg in sql_upper for agg in ['COUNT(', 'SUM(', 'AVG(', 'MIN(', 'MAX('])
+
+            if 'SELECT' in sql_upper and 'EMPNO' not in sql_upper and not is_aggregate:
                 # Find the FROM clause
                 from_index = sql_upper.find(' FROM ')
                 if from_index > 0:
