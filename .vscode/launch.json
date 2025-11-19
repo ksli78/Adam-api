@@ -19,8 +19,9 @@
         "HF_HUB_DISABLE_SYMLINKS_WARNING": "1",
         "HF_HOME": "${workspaceFolder}\\.hf",
         "EMPLOYEE_DB_PASSWORD":"123456",
-        "OLLAMA_HOST" : "http://adam.amentumspacemissions.com:11434",
-        "LLM_MODEL":"mistral-small:22b"
+        "OLLAMA_HOSTS" : "http://adam.amentumspacemissions.com:11434,http://adam.amentumspacemissions.com:11435",
+        "LLM_MODEL":"mistral-small:22b",
+        "LLM_CONTEXT_WINDOW":"16384"
       },
       "console": "integratedTerminal",
       "justMyCode": true

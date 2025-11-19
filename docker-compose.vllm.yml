@@ -85,7 +85,7 @@ volumes:
     driver: local
 
 # NOTES:
-# ------
+# ------dock
 # 1. First startup will download Mistral-Small-Instruct-2409 (~24GB) - takes 10-30 minutes
 # 2. --tensor-parallel-size 2: Splits model across both GPUs
 # 3. --gpu-memory-utilization 0.90: Uses 90% of each GPU's 16GB (~14.4GB per GPU)
