@@ -26,8 +26,24 @@ import random
 import requests
 from typing import Dict, Any, Iterator, Optional, List
 from threading import Lock
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class GenerateResponse:
+    """Response object mimicking ollama.GenerateResponse"""
+    response: str
+    done: bool = False
+
+    def __getitem__(self, key):
+        """Allow dict-style access for backward compatibility"""
+        if key == 'response':
+            return self.response
+        elif key == 'done':
+            return self.done
+        raise KeyError(key)
 
 
 class OllamaClient:
@@ -240,7 +256,11 @@ class OllamaClient:
 
                     try:
                         data = json.loads(line)
-                        yield data
+                        # Yield GenerateResponse object instead of raw dict
+                        yield GenerateResponse(
+                            response=data.get("response", ""),
+                            done=data.get("done", False)
+                        )
 
                         if data.get("done", False):
                             break
