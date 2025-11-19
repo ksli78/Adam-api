@@ -1,0 +1,168 @@
+version: '3.8'
+
+services:
+  # vLLM Instance on GPU 0
+  vllm-gpu0:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-gpu0
+    ports:
+      - "8001:8000"  # Host port 8001 -> Container port 8000
+    environment:
+      - CUDA_VISIBLE_DEVICES=0  # Only GPU 0
+
+    command: >
+      --model ibm-granite/granite-3.1-8b-instruct
+      --dtype float16
+      --max-model-len 8192
+      --gpu-memory-utilization 0.85
+      --swap-space 4
+      --disable-log-requests
+      --port 8000
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']  # GPU 0
+              capabilities: [gpu]
+
+    volumes:
+      # Shared model cache (both instances use same downloaded model)
+      - vllm-models:/root/.cache/huggingface
+
+    networks:
+      - adam-network
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s  # Allow time for model download
+
+  # vLLM Instance on GPU 1
+  vllm-gpu1:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-gpu1
+    ports:
+      - "8002:8000"  # Host port 8002 -> Container port 8000
+    environment:
+      - CUDA_VISIBLE_DEVICES=1  # Only GPU 1
+
+    command: >
+      --model ibm-granite/granite-3.1-8b-instruct
+      --dtype float16
+      --max-model-len 8192
+      --gpu-memory-utilization 0.85
+      --swap-space 4
+      --disable-log-requests
+      --port 8000
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']  # GPU 1
+              capabilities: [gpu]
+
+    volumes:
+      # Shared model cache (both instances use same downloaded model)
+      - vllm-models:/root/.cache/huggingface
+
+    networks:
+      - adam-network
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s  # Allow time for model download
+
+  # Adam RAG API (connects to both vLLM instances)
+  adam-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: adam-api
+    ports:
+      - "8000:8000"
+    environment:
+      - DATA_DIR=/data/airgapped_rag
+      - VLLM_HOSTS=http://vllm-gpu0:8000,http://vllm-gpu1:8000  # Both instances
+      - LLM_MODEL=ibm-granite/granite-3.1-8b-instruct
+      - LLM_CONTEXT_WINDOW=8192
+    volumes:
+      - adam-data:/data/airgapped_rag
+    networks:
+      - adam-network
+    depends_on:
+      - vllm-gpu0
+      - vllm-gpu1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+networks:
+  adam-network:
+    driver: bridge
+
+volumes:
+  adam-data:
+    driver: local
+  vllm-models:
+    name: vllm_models
+    driver: local
+
+# DUAL GPU CONFIGURATION NOTES:
+# ==============================
+#
+# Architecture:
+#   - vLLM GPU 0: Port 8001 -> Uses Quadro RTX 5000 #0
+#   - vLLM GPU 1: Port 8002 -> Uses Quadro RTX 5000 #1
+#   - Adam API: Port 8000 -> Load balances between both vLLM instances
+#
+# Benefits:
+#   - TRUE parallel processing (2 requests simultaneously)
+#   - 2x throughput vs single GPU
+#   - Perfect for 3-5 concurrent users
+#   - Redundancy (if one fails, other continues)
+#   - Shared model cache (only downloads once)
+#
+# Performance Expectations:
+#   - 2 concurrent users: Both get ~10s response (parallel)
+#   - 4 concurrent users: 2 @ 10s, 2 @ 20s (queued)
+#   - Much better than single GPU where all queue sequentially
+#
+# Model Download:
+#   - First startup: Downloads Granite-3.1-8B (~4GB) once
+#   - Shared volume means both instances use same model files
+#   - Total time: 5-10 minutes first run, 1-2 min subsequent
+#
+# Memory Usage (per GPU):
+#   - Model: ~8GB
+#   - KV cache (8192 ctx): ~2GB
+#   - Overhead: ~1GB
+#   - Total: ~11GB per GPU (well within 16GB)
+#
+# Testing:
+#   - Test GPU 0: curl http://localhost:8001/health
+#   - Test GPU 1: curl http://localhost:8002/health
+#   - Generate GPU 0: curl http://localhost:8001/v1/completions -d '...'
+#   - Generate GPU 1: curl http://localhost:8002/v1/completions -d '...'
+#
+# Monitoring:
+#   - GPU usage: nvidia-smi (should show both GPUs active)
+#   - Logs GPU 0: docker logs -f vllm-gpu0
+#   - Logs GPU 1: docker logs -f vllm-gpu1
+#   - Both GPUs: docker logs -f vllm-gpu0 & docker logs -f vllm-gpu1
