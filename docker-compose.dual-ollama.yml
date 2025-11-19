@@ -1,0 +1,177 @@
+version: '3.8'
+
+services:
+  # Ollama Instance on GPU 0
+  ollama-gpu0:
+    image: ollama/ollama:latest
+    container_name: ollama-gpu0
+    ports:
+      - "11434:11434"  # Standard Ollama port
+
+    environment:
+      - CUDA_VISIBLE_DEVICES=0  # Only GPU 0
+      - OLLAMA_KEEP_ALIVE=24h
+      - OLLAMA_NUM_PARALLEL=2  # Handle 2 requests per instance
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']  # GPU 0 only
+              capabilities: [gpu]
+
+    volumes:
+      - ollama-models:/root/.ollama  # Shared model cache
+
+    networks:
+      - adam-network
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Ollama Instance on GPU 1
+  ollama-gpu1:
+    image: ollama/ollama:latest
+    container_name: ollama-gpu1
+    ports:
+      - "11435:11434"  # Different host port, same container port
+
+    environment:
+      - CUDA_VISIBLE_DEVICES=0  # GPU 1 (but CUDA_VISIBLE_DEVICES=0 from container's perspective)
+      - OLLAMA_KEEP_ALIVE=24h
+      - OLLAMA_NUM_PARALLEL=2  # Handle 2 requests per instance
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']  # GPU 1 only
+              capabilities: [gpu]
+
+    volumes:
+      - ollama-models:/root/.ollama  # Shared model cache (downloads once)
+
+    networks:
+      - adam-network
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Adam RAG API (load balances between both Ollama instances)
+  adam-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: adam-api
+    ports:
+      - "8000:8000"
+
+    environment:
+      - DATA_DIR=/data/airgapped_rag
+      # Multiple Ollama hosts for load balancing
+      - OLLAMA_HOSTS=http://ollama-gpu0:11434,http://ollama-gpu1:11434
+      # Use smaller, faster model
+      - LLM_MODEL=mistral:7b-instruct-v0.3
+      - LLM_CONTEXT_WINDOW=8192
+
+    volumes:
+      - adam-data:/data/airgapped_rag
+
+    networks:
+      - adam-network
+
+    depends_on:
+      - ollama-gpu0
+      - ollama-gpu1
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+networks:
+  adam-network:
+    driver: bridge
+
+volumes:
+  adam-data:
+    driver: local
+  ollama-models:
+    driver: local
+
+# DUAL OLLAMA DEPLOYMENT
+# ======================
+#
+# Architecture:
+#   - Ollama GPU 0: Port 11434 -> Uses RTX 5000 #0
+#   - Ollama GPU 1: Port 11435 -> Uses RTX 5000 #1
+#   - Adam API: Load balances between both instances
+#
+# Benefits:
+#   ✅ 2x throughput (2 requests in parallel)
+#   ✅ Perfect for 3-5 concurrent users
+#   ✅ Uses existing Ollama (proven to work)
+#   ✅ Shared model cache (downloads once)
+#   ✅ 3x faster with Mistral 7B vs Mistral-Small 22B
+#
+# Performance:
+#   - 2 concurrent users: Both get ~15s (parallel!)
+#   - 4 concurrent users: All get ~15s (2 per GPU)
+#   - 5+ users: Minimal queuing
+#
+# Deployment:
+#   ```bash
+#   # Stop current Ollama
+#   docker stop ollama
+#
+#   # Start dual Ollama
+#   docker compose -f docker-compose.dual-ollama.yml up -d ollama-gpu0 ollama-gpu1
+#
+#   # Pull Mistral 7B on both instances
+#   docker exec ollama-gpu0 ollama pull mistral:7b-instruct-v0.3
+#   docker exec ollama-gpu1 ollama pull mistral:7b-instruct-v0.3
+#   ```
+#
+# Testing:
+#   ```bash
+#   # Test GPU 0
+#   curl http://localhost:11434/api/generate -d '{
+#     "model": "mistral:7b-instruct-v0.3",
+#     "prompt": "What is 2+2?",
+#     "stream": false
+#   }'
+#
+#   # Test GPU 1
+#   curl http://localhost:11435/api/generate -d '{
+#     "model": "mistral:7b-instruct-v0.3",
+#     "prompt": "What is 3+3?",
+#     "stream": false
+#   }'
+#   ```
+#
+# Memory Usage (per GPU):
+#   - Mistral 7B: ~7GB
+#   - Overhead: ~1GB
+#   - Total: ~8GB per GPU (plenty of headroom!)
+#
+# Code Changes:
+#   Need to update Python code to use load balancing.
+#   See ollama_client_lb.py for implementation.
