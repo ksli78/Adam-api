@@ -1280,15 +1280,15 @@ class SQLQueryHandler:
 
             return table_html
 
-        # Build prompt for result formatting
-        prompt = f"""You are formatting database query results. Provide a direct, concise answer with HTML formatting.
+        # Build prompt for result formatting - Use Mistral instruction format
+        prompt = f"""[INST] You are a helpful assistant formatting database query results.
 
-USER QUESTION: {user_query}
+Question: {user_query}
 
-QUERY RESULTS ({rows_returned} rows):
+Database results ({rows_returned} rows):
 {json.dumps(results, indent=2)}
 
-CRITICAL FORMATTING RULES:
+Formatting rules:
 1. Answer directly - NO preambles like "Here is..." or "The answer is..."
 2. DO NOT repeat or echo the user's question in your answer
 3. NO closing statements like "Let me know..." or notes about result count
@@ -1365,7 +1365,7 @@ Answer: "<table style=\\"border-collapse: collapse; width: 100%;\\">
 </tr>
 </table>"
 
-FORMATTED ANSWER:"""
+Now provide the formatted answer: [/INST]"""
 
         # Calculate dynamic token limit based on number of rows
         # Estimate ~80 tokens per row for table formatting
@@ -1380,8 +1380,10 @@ FORMATTED ANSWER:"""
                 model=self.model_name,
                 prompt=prompt,
                 options={
-                    "temperature": 0.3,
-                    "num_predict": num_predict
+                    "temperature": 0.7,  # Higher for better generation with smaller models
+                    "num_predict": num_predict,
+                    "top_p": 0.9,
+                    "top_k": 40
                 },
                 keep_alive=-1
             )
@@ -1512,45 +1514,35 @@ FORMATTED ANSWER:"""
         if dept:
             context_summary += f"; Department: {dept}"
 
-        prompt = f"""You are formatting database query results and generating follow-up questions.
+        # Use Mistral-specific prompt format for better compatibility
+        prompt = f"""[INST] You are a helpful assistant formatting database query results.
 
-USER QUESTION: {user_query}
+Question: {user_query}
 
-QUERY RESULT (1 row):
+Database result:
 {json.dumps(results[0], indent=2)}
 
-PEOPLE IN THIS RESULT: {names_text}
-(These are the ACTUAL NAMES you MUST use in follow-up questions - NEVER use placeholders!)
+Instructions:
+1. Provide a direct, concise answer to the question
+2. Use the person's FirstName and LastName from the result
+3. Format emails as: <a href="mailto:EMAIL">EMAIL</a>
+4. Format phones as: <a href="tel:PHONE">PHONE</a>
+5. Skip null or empty fields
+6. After your answer, add: ###FOLLOWUPS###
+7. Then list 2-3 short follow-up questions about {names_text}
 
-TASK 1 - Format the answer:
-- Answer directly - NO preambles like "Here is..." or "The answer is..."
-- DO NOT repeat or echo the user's question
-- Use label:value format with single line breaks (\n)
-- Email addresses: Format as <a href="mailto:EMAIL">EMAIL</a>
-- Phone numbers: Format as <a href="tel:PHONE">PHONE</a>
-- Use FirstName and LastName fields (NEVER UserName)
-- NEVER display ID fields (PersonnelId, EmpNo, SupervisorNo)
-- Skip null/empty fields
-- For "Who is the [TITLE]" questions, use format: "[Name] is the [Title]." followed by contact info
+Example format:
+Grace Holter's information:
 
-TASK 2 - Generate 2-3 follow-up questions:
-- SHORT and SPECIFIC (5-10 words max)
-- Directly related to the person/result returned
-- Common types: contact info, location, reporting structure, team info
-- CRITICAL: Use ACTUAL PERSON NAMES from "PEOPLE IN THIS RESULT" above
-- NEVER use placeholders like "Result 1", "[reporting manager]", "[supervisor]", "this person", "the employee"
-
-OUTPUT FORMAT (CRITICAL):
-First provide the formatted answer, then on a new line put "###FOLLOWUPS###", then list the questions one per line.
-
-Example:
-Jane Doe is the VP of Operations.\n\nDepartment: OPS-001\nEmail: <a href="mailto:jane@company.com">jane@company.com</a>\nPhone: <a href="tel:555-1234">555-1234</a>
+Name: Grace Holter
+Department: Engineering
+Email: <a href="mailto:grace.holter@company.com">grace.holter@company.com</a>
 ###FOLLOWUPS###
-Who reports to Jane Doe?
-What is Jane Doe's full contact information?
-List all employees in OPS-001
+What is Grace Holter's phone number?
+Who does Grace Holter report to?
+Where does Grace Holter sit?
 
-Now generate the response:"""
+Now answer the question: [/INST]"""
 
         # Calculate dynamic token limit
         num_predict = min(1000, 500 + 150)  # Answer + 3 questions
@@ -1559,12 +1551,15 @@ Now generate the response:"""
 
         try:
             # Call Ollama with streaming enabled
+            # Mistral works better with slightly higher temperature and explicit stop tokens
             response = self.ollama_client.generate(
                 model=self.model_name,
                 prompt=prompt,
                 options={
-                    "temperature": 0.3,
-                    "num_predict": num_predict
+                    "temperature": 0.7,  # Higher for better generation with smaller models
+                    "num_predict": num_predict,
+                    "top_p": 0.9,
+                    "top_k": 40
                 },
                 stream=True,
                 keep_alive=-1
@@ -1793,15 +1788,15 @@ Now generate the response:"""
         context_text = "\n".join(result_summary) if result_summary else "Employee information"
         people_list = ", ".join(unique_people_names) if unique_people_names else "people in results"
 
-        prompt = f"""You are helping generate follow-up questions for an employee directory query system.
+        prompt = f"""[INST] You are helping generate follow-up questions for an employee directory query system.
 
-ORIGINAL QUESTION: {user_query}
+Original question: {user_query}
 
-RESULTS SUMMARY:
+Results summary:
 {context_text}
 
-PEOPLE MENTIONED IN RESULTS: {people_list}
-(These are the ACTUAL NAMES you MUST use - NEVER use placeholders like "[reporting manager]" or "[supervisor]"!)
+People mentioned: {people_list}
+(Use these ACTUAL NAMES in your follow-up questions - NEVER use placeholders!)
 
 Generate 2-3 natural, conversational follow-up questions that a user might want to ask based on these results.
 
@@ -1845,7 +1840,7 @@ Show all staff in ENGR-001
 
 IMPORTANT: Use actual names from the results, NOT "Result 1" or generic references!
 
-Now generate follow-up questions:"""
+Generate the follow-up questions now: [/INST]"""
 
         try:
             response = self.ollama_client.generate(
