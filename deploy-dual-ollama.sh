@@ -106,11 +106,11 @@ echo ""
 
 # Pull model on GPU 0
 echo "Pulling model on GPU 0..."
-docker exec ollama-gpu0 ollama pull mistral:7b-instruct-v0.3
+docker exec ollama-gpu0 ollama pull mistral
 
 echo ""
 echo "Pulling model on GPU 1..."
-docker exec ollama-gpu1 ollama pull mistral:7b-instruct-v0.3
+docker exec ollama-gpu1 ollama pull mistral
 
 echo ""
 echo "=========================================="
@@ -122,7 +122,7 @@ echo ""
 echo "Testing Ollama GPU 0 (port 11434)..."
 TEST_RESPONSE_GPU0=$(curl -s http://localhost:11434/api/generate \
     -d '{
-        "model": "mistral:7b-instruct-v0.3",
+        "model": "mistral",
         "prompt": "2+2=",
         "stream": false,
         "options": {"num_predict": 5}
@@ -143,7 +143,7 @@ echo ""
 echo "Testing Ollama GPU 1 (port 11435)..."
 TEST_RESPONSE_GPU1=$(curl -s http://localhost:11435/api/generate \
     -d '{
-        "model": "mistral:7b-instruct-v0.3",
+        "model": "mistral",
         "prompt": "3+3=",
         "stream": false,
         "options": {"num_predict": 5}
@@ -180,7 +180,7 @@ echo ""
 echo "Architecture:"
 echo "  - Ollama GPU 0: http://localhost:11434"
 echo "  - Ollama GPU 1: http://localhost:11435"
-echo "  - Model: mistral:7b-instruct-v0.3"
+echo "  - Model: mistral (7B instruct version)"
 echo ""
 echo "Performance:"
 echo "  - Response time: ~15-20s (3x faster than Mistral-Small 22B)"
@@ -198,7 +198,7 @@ echo "2. Set environment variable in .env:"
 echo "   OLLAMA_HOSTS=http://ollama-gpu0:11434,http://ollama-gpu1:11434"
 echo ""
 echo "3. Update model in .env:"
-echo "   LLM_MODEL=mistral:7b-instruct-v0.3"
+echo "   LLM_MODEL=mistral"
 echo ""
 echo "4. Restart Adam API:"
 echo "   $COMPOSE_CMD -f docker-compose.dual-ollama.yml up -d adam-api"

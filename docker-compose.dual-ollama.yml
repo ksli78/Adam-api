@@ -85,7 +85,7 @@ services:
       # Multiple Ollama hosts for load balancing
       - OLLAMA_HOSTS=http://ollama-gpu0:11434,http://ollama-gpu1:11434
       # Use smaller, faster model
-      - LLM_MODEL=mistral:7b-instruct-v0.3
+      - LLM_MODEL=mistral
       - LLM_CONTEXT_WINDOW=8192
 
     volumes:
