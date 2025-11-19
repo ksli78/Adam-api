@@ -23,6 +23,36 @@ fi
 echo "Using: $COMPOSE_CMD"
 echo ""
 
+# Check for existing Ollama container to offer cleanup
+EXISTING_OLLAMA=$(docker ps -a --filter "name=ollama" --format "{{.Names}}" | grep -E "^ollama$" | head -1 || true)
+
+if [ -n "$EXISTING_OLLAMA" ]; then
+    echo "Found existing Ollama container: $EXISTING_OLLAMA"
+    echo ""
+
+    # List current models
+    if docker ps --filter "name=ollama" --format "{{.Names}}" | grep -q "^ollama$"; then
+        echo "Current models:"
+        docker exec ollama ollama list || true
+        echo ""
+
+        read -p "Would you like to remove old models to save disk space? (y/n): " CLEANUP_MODELS
+
+        if [[ "$CLEANUP_MODELS" =~ ^[Yy]$ ]]; then
+            echo ""
+            echo "Recommended: Remove mistral-small:22b (saves ~12GB)"
+            read -p "Remove mistral-small:22b? (y/n): " REMOVE_22B
+
+            if [[ "$REMOVE_22B" =~ ^[Yy]$ ]]; then
+                echo "Removing mistral-small:22b..."
+                docker exec ollama ollama rm mistral-small:22b || echo "  (Model not found, skipping)"
+                echo "✅ Model removed"
+            fi
+            echo ""
+        fi
+    fi
+fi
+
 # Stop current Ollama
 echo "Stopping existing Ollama containers..."
 docker stop ollama ollama-gpu0 ollama-gpu1 2>/dev/null || true
