@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data/airgapped_rag"))
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-LLM_MODEL = os.getenv("LLM_MODEL", "llama3:8b")
+OLLAMA_HOSTS = os.getenv("OLLAMA_HOSTS", "http://localhost:11434").split(",")
+LLM_MODEL = os.getenv("LLM_MODEL", "mistral")
 
 # Create router
 sql_router = APIRouter(prefix="", tags=["SQL Queries"])
@@ -74,7 +74,7 @@ async def query_employee_directory(request: SQLQueryRequest):
         # Initialize SQL query handler for employee directory
         sql_handler = get_sql_query_handler(
             database_name="employee_directory",
-            ollama_host=OLLAMA_HOST,
+            ollama_hosts=OLLAMA_HOSTS,
             model_name=LLM_MODEL
         )
 
@@ -407,7 +407,7 @@ async def query_employee_directory_stream(request: SQLQueryRequest):
             # Initialize SQL query handler for employee directory
             sql_handler = get_sql_query_handler(
                 database_name="employee_directory",
-                ollama_host=OLLAMA_HOST,
+                ollama_hosts=OLLAMA_HOSTS,
                 model_name=LLM_MODEL
             )
 

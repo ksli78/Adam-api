@@ -37,7 +37,7 @@ from parent_child_store import get_parent_child_store
 from sql_routes import sql_router
 
 # Ollama for answer generation
-import ollama
+from ollama_client_lb import OllamaClient
 
 # FastAPI
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
@@ -62,9 +62,10 @@ DOCS_DIR.mkdir(parents=True, exist_ok=True)
 CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Ollama configuration
-# Remote Ollama server on development/production machine with 32GB VRAM (2 GPUs)
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://adam.amentumspacemissions.com:11434")
-LLM_MODEL = os.getenv("LLM_MODEL", "mistral-small:22b")  # Mistral Small 22B - excellent for RAG (~22GB VRAM)
+# Dual Ollama servers on development/production machine with 32GB VRAM (2 GPUs)
+# Load balanced across both GPUs for 2x throughput
+OLLAMA_HOSTS = os.getenv("OLLAMA_HOSTS", "http://adam.amentumspacemissions.com:11434").split(",")
+LLM_MODEL = os.getenv("LLM_MODEL", "mistral")  # Mistral 7B - fast and efficient for RAG (~4GB VRAM per GPU)
 
 # LLM Context window configuration
 # Mistral Small supports up to 128K tokens, we use 16K for optimal VRAM usage
@@ -112,7 +113,7 @@ class AdvancedRAGPipeline:
         )
         self.metadata_extractor = get_metadata_extractor(
             model_name=LLM_MODEL,
-            ollama_host=OLLAMA_HOST,
+            ollama_hosts=OLLAMA_HOSTS,
             context_window=LLM_CONTEXT_WINDOW
         )
         self.document_store = get_parent_child_store(
@@ -123,8 +124,8 @@ class AdvancedRAGPipeline:
         logger.info("Initializing Docling converter...")
         self.docling_converter = DocumentConverter()
 
-        # Initialize Ollama client for answer generation
-        self.ollama_client = ollama.Client(host=OLLAMA_HOST)
+        # Initialize load-balanced Ollama client for answer generation
+        self.ollama_client = OllamaClient(hosts=OLLAMA_HOSTS, strategy="round-robin")
 
         logger.info("Advanced RAG Pipeline initialized successfully!")
         logger.info(f"Document store stats: {self.document_store.get_statistics()}")

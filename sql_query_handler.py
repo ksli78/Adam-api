@@ -14,7 +14,7 @@ import re
 import asyncio
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, AsyncGenerator
-import ollama
+from ollama_client_lb import OllamaClient
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +84,8 @@ class SQLQueryHandler:
         self,
         database_name: str,
         config_path: str = "config/databases.yaml",
-        ollama_host: str = "http://localhost:11434",
-        model_name: str = "llama3:8b"
+        ollama_hosts: List[str] = None,
+        model_name: str = "mistral"
     ):
         """
         Initialize SQL query handler.
@@ -93,12 +93,13 @@ class SQLQueryHandler:
         Args:
             database_name: Name of database config (e.g., "employee_directory")
             config_path: Path to databases.yaml configuration file
-            ollama_host: Ollama server URL
+            ollama_hosts: List of Ollama server URLs for load balancing
             model_name: LLM model name for text-to-SQL and formatting
         """
         self.database_name = database_name
         self.model_name = model_name
-        self.ollama_client = ollama.Client(host=ollama_host)
+        self.ollama_hosts = ollama_hosts or ["http://localhost:11434"]
+        self.ollama_client = OllamaClient(hosts=self.ollama_hosts, strategy="round-robin")
 
         # Load configuration
         config_file = Path(config_path)

@@ -16,7 +16,7 @@ import json
 import logging
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field, asdict
-import ollama
+from ollama_client_lb import OllamaClient
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +65,8 @@ class MetadataExtractor:
 
     def __init__(
         self,
-        model_name: str = "mistral-small:22b",
-        ollama_host: str = "http://adam.amentumspacemissions.com:11434",
+        model_name: str = "mistral",
+        ollama_hosts: List[str] = None,
         max_input_chars: int = 6000,
         temperature: float = 0.1,
         context_window: int = 32768
@@ -76,23 +76,23 @@ class MetadataExtractor:
 
         Args:
             model_name: Ollama model to use
-            ollama_host: Ollama server URL
+            ollama_hosts: List of Ollama server URLs for load balancing
             max_input_chars: Maximum characters to send to LLM
             temperature: LLM temperature (0.0-1.0, lower = more deterministic)
             context_window: LLM context window size in tokens
         """
         self.model_name = model_name
-        self.ollama_host = ollama_host
+        self.ollama_hosts = ollama_hosts or ["http://adam.amentumspacemissions.com:11434"]
         self.max_input_chars = max_input_chars
         self.temperature = temperature
         self.context_window = context_window
 
-        # Configure ollama client
-        self.client = ollama.Client(host=ollama_host)
+        # Configure load-balanced ollama client
+        self.client = OllamaClient(hosts=self.ollama_hosts, strategy="round-robin")
 
         logger.info(
             f"MetadataExtractor initialized: model={model_name}, "
-            f"host={ollama_host}, max_chars={max_input_chars}, context_window={context_window}"
+            f"hosts={self.ollama_hosts}, max_chars={max_input_chars}, context_window={context_window}"
         )
 
     def extract(

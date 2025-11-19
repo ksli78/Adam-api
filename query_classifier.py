@@ -10,8 +10,8 @@ without searching documents.
 """
 
 import logging
-from typing import Dict, Any
-import ollama
+from typing import Dict, Any, List
+from ollama_client_lb import OllamaClient
 
 logger = logging.getLogger(__name__)
 
@@ -67,19 +67,20 @@ class QueryClassifier:
 
     def __init__(
         self,
-        ollama_host: str = "http://localhost:11434",
-        model_name: str = "llama3:8b"
+        ollama_hosts: List[str] = None,
+        model_name: str = "mistral"
     ):
         """
         Initialize the query classifier.
 
         Args:
-            ollama_host: Ollama server URL
+            ollama_hosts: List of Ollama server URLs for load balancing
             model_name: LLM model to use for classification
         """
-        self.ollama_client = ollama.Client(host=ollama_host)
+        self.ollama_hosts = ollama_hosts or ["http://localhost:11434"]
+        self.ollama_client = OllamaClient(hosts=self.ollama_hosts, strategy="round-robin")
         self.model_name = model_name
-        logger.info(f"QueryClassifier initialized with model: {model_name}")
+        logger.info(f"QueryClassifier initialized with model: {model_name}, hosts: {self.ollama_hosts}")
 
     def classify_query(self, query: str) -> Dict[str, Any]:
         """
