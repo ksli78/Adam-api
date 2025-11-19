@@ -1,0 +1,128 @@
+version: '3.8'
+
+services:
+  # vLLM Instance on GPU 0 - Conservative Memory Settings
+  vllm-gpu0:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-gpu0
+    ports:
+      - "8001:8000"
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      # Fix memory fragmentation
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      # Force single GPU visibility
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+
+    command: >
+      --model HuggingFaceTB/SmolLM2-1.7B-Instruct
+      --dtype float16
+      --max-model-len 4096
+      --gpu-memory-utilization 0.70
+      --swap-space 2
+      --disable-log-requests
+      --enforce-eager
+      --port 8000
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
+
+    volumes:
+      - vllm-models:/root/.cache/huggingface
+
+    networks:
+      - adam-network
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+
+  # vLLM Instance on GPU 1 - Conservative Memory Settings
+  vllm-gpu1:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-gpu1
+    ports:
+      - "8002:8000"
+    environment:
+      - CUDA_VISIBLE_DEVICES=1
+      # Fix memory fragmentation
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      # Force single GPU visibility
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+
+    command: >
+      --model HuggingFaceTB/SmolLM2-1.7B-Instruct
+      --dtype float16
+      --max-model-len 4096
+      --gpu-memory-utilization 0.70
+      --swap-space 2
+      --disable-log-requests
+      --enforce-eager
+      --port 8000
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu]
+
+    volumes:
+      - vllm-models:/root/.cache/huggingface
+
+    networks:
+      - adam-network
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+
+networks:
+  adam-network:
+    driver: bridge
+
+volumes:
+  vllm-models:
+    name: vllm_models
+    driver: local
+
+# MINIMAL MEMORY CONFIGURATION
+# ============================
+#
+# This uses SmolLM2-1.7B (~2GB) to guarantee it fits.
+# Once this works, we can try larger models.
+#
+# Changes from previous config:
+#   1. SmolLM2-1.7B instead of Granite-8B (much smaller)
+#   2. PYTORCH_CUDA_ALLOC_CONF to fix fragmentation
+#   3. --enforce-eager (disables CUDA graphs, saves memory)
+#   4. --gpu-memory-utilization 0.70 (very conservative)
+#   5. --max-model-len 4096 (smaller context)
+#
+# Memory usage (per GPU):
+#   - Model: ~2GB
+#   - KV cache: ~1GB
+#   - Overhead: ~1GB
+#   - Total: ~4GB (plenty of headroom)
+#
+# Once working, upgrade path:
+#   1. SmolLM2-1.7B (2GB) - Baseline
+#   2. Qwen2.5-3B-Instruct (3GB) - Better quality
+#   3. Phi-3-mini-4k (4GB) - Microsoft model
+#   4. Try Granite-8B with quantization
