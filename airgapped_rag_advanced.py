@@ -515,6 +515,8 @@ class AdvancedRAGPipeline:
             SSE-formatted JSON messages
         """
         try:
+            import time
+            stream_start_time = time.time()
             logger.info(f"[STREAM START] Processing streaming query: {question[:100]}...")
 
             # Yield initial status - CRITICAL: await asyncio.sleep(0) after EVERY yield to flush
@@ -522,6 +524,8 @@ class AdvancedRAGPipeline:
             await asyncio.sleep(0)  # Force async event loop to flush to client
 
             # Step 1: Use hybrid search to get top 30 candidates (casts wide net)
+            retrieval_start = time.time()
+            logger.info(f"[TIMING] Starting document retrieval...")
             child_results, _ = self.document_store.retrieve_with_parent_expansion(
                 query=question,
                 top_k=30,  # Get more candidates for reranking
@@ -530,6 +534,8 @@ class AdvancedRAGPipeline:
                 use_hybrid=use_hybrid,
                 bm25_weight=bm25_weight
             )
+            retrieval_end = time.time()
+            logger.info(f"[TIMING] ⚠️  DOCUMENT RETRIEVAL took {retrieval_end - retrieval_start:.3f}s")
 
             # Check if we have insufficient results
             MIN_CHUNKS_THRESHOLD = 1
@@ -551,6 +557,8 @@ class AdvancedRAGPipeline:
             top_semantic_chunks = child_results_reranked[:SEMANTIC_TOP_K]
 
             # Step 3: Expand top semantic chunks to parents
+            parent_expand_start = time.time()
+            logger.info(f"[TIMING] Expanding to parent chunks...")
             top_child_ids = [chunk['id'] for chunk in top_semantic_chunks]
             parent_ids_seen = set()
             parent_results = []
@@ -582,6 +590,8 @@ class AdvancedRAGPipeline:
                     except Exception as e:
                         logger.warning(f"Failed to fetch parent {parent_id}: {e}")
 
+            parent_expand_end = time.time()
+            logger.info(f"[TIMING] Parent expansion took {parent_expand_end - parent_expand_start:.3f}s")
             logger.info(f"Expanded to {len(parent_results)} parent chunks")
 
             if not parent_results:
@@ -616,6 +626,11 @@ class AdvancedRAGPipeline:
                 })
 
             # Don't send citations yet - wait until after answer is generated so we can filter
+            before_llm_time = time.time()
+            time_to_llm = before_llm_time - stream_start_time
+            logger.info(f"[TIMING] ⚠️⚠️⚠️  TOTAL TIME BEFORE LLM STREAMING: {time_to_llm:.3f}s")
+            logger.info(f"[TIMING] This is the delay users experience before seeing tokens!")
+
             yield f"data: {json.dumps({'type': 'status', 'message': 'Generating answer...'})}\n\n"
             await asyncio.sleep(0)
 
