@@ -127,21 +127,34 @@ class AdvancedRAGPipeline:
         # Initialize load-balanced Ollama client for answer generation
         self.ollama_client = OllamaClient(hosts=OLLAMA_HOSTS, strategy="round-robin")
 
-        # Warm up Ollama model (load into GPU memory to avoid 30-60s delay on first query)
-        logger.info(f"Warming up Ollama model '{LLM_MODEL}' (loading into GPU memory)...")
-        try:
-            warmup_response = self.ollama_client.generate(
-                model=LLM_MODEL,
-                prompt="Hello",
-                options={"temperature": 0.1, "num_predict": 5},
-                stream=False,
-                keep_alive="10m"  # Keep loaded for 10 minutes
-            )
-            logger.info(f"✅ Ollama model '{LLM_MODEL}' warmed up and ready!")
-            logger.info(f"   First user query will now be fast (<2s time to first token)")
-        except Exception as e:
-            logger.warning(f"⚠️  Failed to warm up Ollama model: {e}")
-            logger.warning(f"   First query will experience 30-60s delay for model loading")
+        # Warm up Ollama model on ALL instances (load into GPU memory to avoid 30-60s delay)
+        # IMPORTANT: Must warm up each instance separately to ensure load balancer works smoothly
+        logger.info(f"Warming up Ollama model '{LLM_MODEL}' on ALL instances...")
+        warmed_instances = 0
+        for i, host in enumerate(OLLAMA_HOSTS):
+            try:
+                logger.info(f"  Warming instance {i+1}/{len(OLLAMA_HOSTS)}: {host}")
+                single_client = OllamaClient(host=host)
+                warmup_response = single_client.generate(
+                    model=LLM_MODEL,
+                    prompt="Hello",
+                    options={"temperature": 0.1, "num_predict": 5},
+                    stream=False,
+                    keep_alive="10m"  # Keep loaded for 10 minutes
+                )
+                warmed_instances += 1
+                logger.info(f"  ✅ Instance {i+1} ready: {host}")
+            except Exception as e:
+                logger.warning(f"  ⚠️  Instance {i+1} failed: {host} - {e}")
+
+        if warmed_instances == len(OLLAMA_HOSTS):
+            logger.info(f"✅ All {warmed_instances} Ollama instances warmed up and ready!")
+            logger.info(f"   Load balancer will distribute queries across all instances")
+        elif warmed_instances > 0:
+            logger.warning(f"⚠️  Only {warmed_instances}/{len(OLLAMA_HOSTS)} instances warmed up")
+            logger.warning(f"   Some queries may experience delays if routed to cold instances")
+        else:
+            logger.warning(f"⚠️  No instances warmed up! All queries will experience model loading delays")
 
         logger.info("Advanced RAG Pipeline initialized successfully!")
         logger.info(f"Document store stats: {self.document_store.get_statistics()}")
