@@ -7,116 +7,141 @@ From your logs:
 ### ✅ What's Working Well
 - **Model warmup**: Loads at startup (19s)
 - **RAG retrieval**: 0.166-0.421s (excellent!)
-- **GPU detected**: NVIDIA RTX 3500 Ada Laptop (8GB VRAM)
+- **Embedding GPU**: NVIDIA RTX 3500 Ada Laptop (8GB VRAM) - fast! ✅
+- **LLM GPUs**: 2x 16GB VRAM GPUs - model fits! ✅
 
 ### 🚨 Performance Issues
 
 ```
 Model: mistral-small:22b
-GPU: NVIDIA RTX 3500 Ada (8GB VRAM)
+Hardware: 2x 16GB VRAM GPUs (14GB used, 2GB free each)
+Model fits comfortably in VRAM ✅
 
+But still slow:
 First query TTFT:  12.598s
 Second query TTFT: 12.001s  (should be <1s if model stayed loaded!)
-Token generation:  6.8 tokens/second (should be 30-50+)
+Token generation:  6.8 tokens/second
+
+Expected for Q4 on 16GB GPU: 15-25 tok/s
+Expected for Q5 on 16GB GPU: 10-18 tok/s
 ```
 
-## Root Cause: Model Too Large for GPU
+## Root Causes: Configuration Issues
 
-**mistral-small:22b** = 22 BILLION parameters
+Since the model fits in VRAM (14GB used on 16GB GPU), the issues are:
 
-### Memory Requirements:
-- **FP16 (full precision)**: ~44GB VRAM
-- **Q4 quantization**: ~11GB VRAM
-- **Q3 quantization**: ~8GB VRAM (barely fits)
-- **Your GPU**: 8GB VRAM
+### 1. Model Not Staying Loaded (12s TTFT on both queries)
+The second query took 12s TTFT even within 10 minutes → `keep_alive` not working
 
-**The model is too large!** It's likely:
-1. Heavily quantized (Q3) to squeeze into 8GB → slow inference
-2. Spilling to system RAM → very slow swapping
-3. Partially running on CPU → extremely slow
+**Possible causes:**
+- Load balancer switching to instance without model loaded
+- `keep_alive` parameter not supported by Ollama version
+- Both Ollama instances running on same GPU
+- Model being unloaded for other reasons
 
-This explains:
-- **Slow token generation**: 6.8 tok/s (Q3 quantization + memory pressure)
-- **12s "TTFT" on both queries**: Model unloading and reloading due to memory pressure
+### 2. Slow Token Generation (6.8 tok/s)
+For mistral-small:22b on 16GB GPU:
+- Q3 quantization: 6-10 tok/s ← **Your speed matches this!**
+- Q4 quantization: 15-25 tok/s
+- Q5 quantization: 10-18 tok/s
 
-## Solution 1: Switch to Mistral 7B (RECOMMENDED) ⚡
+**Likely cause:** Model is Q3 quantized (over-aggressive for 16GB GPU)
 
-**Best option for your 8GB GPU!**
+## Solution 1: Fix Dual-GPU Configuration (RECOMMENDED) ⚡
+
+**Your hardware can handle mistral-small:22b - let's fix the config!**
+
+### Run Diagnostics First:
+
+See **DUAL_GPU_DIAGNOSTICS.md** for detailed diagnostic commands.
+
+Quick check:
+```bash
+# Check model quantization
+curl http://adam.amentumspacemissions.com:11434/api/show -d '{"name":"mistral-small:22b"}' | grep quant
+
+# Check if models stay loaded
+curl http://adam.amentumspacemissions.com:11434/api/ps
+curl http://adam.amentumspacemissions.com:11435/api/ps
+```
+
+### A. Upgrade to Q4 or Q5 Quantization
+
+If model is Q3, upgrade to Q4 or Q5:
+
+```bash
+# Pull Q4 (fastest, 15-25 tok/s)
+ollama pull mistral-small:22b-instruct-q4_k_m
+
+# Or pull Q5 (better quality, 10-18 tok/s)
+ollama pull mistral-small:22b-instruct-q5_k_m
+```
+
+Update your config:
+```bash
+LLM_MODEL=mistral-small:22b-instruct-q4_k_m
+```
+
+**Expected improvement:**
+- Token generation: 15-25 tok/s (vs 6.8)
+- Total time: ~35s (vs 93s)
+- **2.5x faster!**
+
+### B. Verify Both Instances Warm Up
+
+The code update should now warm both instances. Watch for:
+```
+✅ All 2 Ollama instances warmed up and ready!
+```
+
+If not, check Docker GPU assignment.
+
+### C. Reduce Context Window
+
+Your current setting of 16K is expensive for prompt processing:
+
+```python
+LLM_CONTEXT_WINDOW=8192  # Test with 8K instead of 16K
+```
+
+**Expected improvement:**
+- Prompt processing: 2-5s (vs 5-10s)
+- TTFT: 7-10s (vs 12s)
+
+## Solution 2: Switch to Mistral 7B (Alternative)
+
+**If configuration fixes don't work or you want maximum speed:**
 
 ### How to Switch:
 
-**Option A: Set environment variable** (if using batch file or startup script)
-```batch
-set LLM_MODEL=mistral
-```
-
-**Option B: Update Python code** (if not using env var)
-
-Edit the file that starts your app or sets the environment variable to:
-```python
-LLM_MODEL=mistral
-# or more specific:
+**Set environment variable or update config:**
+```bash
 LLM_MODEL=mistral:7b-instruct-v0.3
 ```
 
 ### Expected Performance with Mistral 7B:
 
 ```
-Memory usage:      4-5GB VRAM (comfortably fits!)
-First query TTFT:  1-2s (with warmup)
-Warm query TTFT:   0.5-1s ✅
-Token generation:  35-50 tokens/second ✅
-Total time:        ~15 seconds for 544 tokens (vs current 93s)
-Quality:           Excellent for RAG (actually better for concise answers)
+Memory usage:      4-5GB VRAM per GPU
+First query TTFT:  0.5-1s (with warmup)
+Warm query TTFT:   0.3-0.5s ✅
+Token generation:  40-60 tokens/second ✅
+Total time:        ~12 seconds for 544 tokens (vs current 93s)
+Quality:           Excellent for RAG (more concise answers)
 ```
 
-**Your users would see:**
-- Retrieval: 0.4s
-- First token: 1s
-- Full answer: 15s total vs current 93s
-- **6x faster!** 🚀
+**Improvement:**
+- **8x faster total time** (12s vs 93s)
+- **Instant TTFT** on warm queries (<1s)
+- **Room for more users** (lower VRAM usage)
 
-## Solution 2: Optimize mistral-small:22b (If You Must Keep It)
+## Solution 3: Keep mistral-small:22b But Optimize
 
-If you really need the 22B model:
+**Only if the fixes in Solution 1 don't work:**
 
-### A. Check Current Quantization
+These are fallback options covered in Solution 1 above.
 
-```bash
-# On your Ollama server
-curl http://adam.amentumspacemissions.com:11434/api/show -d '{"name":"mistral-small:22b"}'
-```
-
-Look for the quantization level (Q3, Q4, Q5, etc.)
-
-### B. Try Q4 or Q5 (Better Quality)
-
-```bash
-# Pull better quantization
-ollama pull mistral-small:22b-instruct-q4_k_m
-# or
-ollama pull mistral-small:22b-instruct-q5_k_m
-```
-
-Then update:
-```
-LLM_MODEL=mistral-small:22b-instruct-q4_k_m
-```
-
-**Expected improvement:**
-- Token generation: 10-15 tok/s (better than 6.8, but still slow)
-- TTFT: Still 10-12s due to model size
-- Total time: ~40-50s for 544 tokens
-
-### C. Reduce Context Window
-
-Smaller context = less memory pressure:
-
-```python
-LLM_CONTEXT_WINDOW=8192  # Reduce from 16384
-```
-
-## Solution 3: Fix Load Balancer Keep-Alive Issue
+## Solution 4: Fix Load Balancer Issues
 
 The 12s TTFT on the second query suggests the model is being unloaded or the load balancer is routing to an instance without the model loaded.
 
@@ -174,47 +199,58 @@ grep -r "employee" . --include="*.py" | grep -i model
 
 If it uses a smaller/different model, that might explain why it's faster.
 
-## My Strong Recommendation
+## My Recommendations
 
-**Switch to Mistral 7B immediately:**
+### Priority 1: Fix Current Setup (Keep mistral-small:22b)
 
-1. **6x faster responses** (15s vs 93s)
-2. **Better user experience** (<1s TTFT warm queries)
-3. **More reliable** (no memory pressure, no swapping)
-4. **Better quality** for RAG (22B often over-explains, 7B is more concise)
+Your hardware can handle it! Just need to fix configuration:
 
-For RAG tasks, model size matters less than you think. The quality comes from:
-1. **Good retrieval** (you have this! ✅)
-2. **Good prompting** (you have this! ✅)
-3. **Fast iteration** (currently blocked by slow model)
+1. **Run diagnostics** (see DUAL_GPU_DIAGNOSTICS.md)
+2. **Upgrade to Q4 quantization** if currently Q3
+3. **Reduce context window** to 8K
+4. **Verify both GPU instances** warm up correctly
 
-A fast, responsive 7B model provides better UX than a slow 22B model for this use case.
+**Expected improvement:**
+- Token generation: 15-25 tok/s (vs 6.8) = **2.5x faster**
+- Total time: ~35s (vs 93s) = **2.5x faster**
+- TTFT (warm): 2-5s (vs 12s) if keep_alive works
 
-## Quick Win Test
+### Priority 2: Consider Mistral 7B for Maximum Speed
 
-Try this right now to see the difference:
+If you want the absolute best user experience:
+
+**Advantages:**
+- **8x faster** (12s vs 93s total time)
+- **Instant warm queries** (<1s TTFT)
+- **More concurrent users** (lower VRAM per query)
+- **Better for RAG** (more concise, less rambling)
+
+**When to choose:**
+- User experience is top priority
+- You value speed over marginal quality differences
+- You want to support more concurrent users
+
+## Quick Diagnostic Check
+
+Run this now to identify the issue:
 
 ```bash
-# In your startup script or environment
-set LLM_MODEL=mistral:7b-instruct-v0.3
+# Check quantization level
+curl http://adam.amentumspacemissions.com:11434/api/show -d '{"name":"mistral-small:22b"}' 2>/dev/null | grep -i quant
 
-# Restart your API
-# Run a test query
+# Check if models are loaded
+curl http://adam.amentumspacemissions.com:11434/api/ps 2>/dev/null
+curl http://adam.amentumspacemissions.com:11435/api/ps 2>/dev/null
 ```
 
-You should immediately see:
-- TTFT: ~1s (vs 12s)
-- Token generation: 35-50 tok/s (vs 6.8)
-- Total time: ~15s (vs 93s)
+This will tell you immediately if the model is Q3 (needs upgrade) or if only one instance has the model loaded.
 
 ## Summary
 
-| Metric | Current (22B) | With Mistral 7B | Improvement |
-|--------|---------------|-----------------|-------------|
-| TTFT (warm) | 12s | 1s | **12x faster** ✅ |
-| Token rate | 6.8 tok/s | 40 tok/s | **6x faster** ✅ |
-| Total time | 93s | 15s | **6x faster** ✅ |
-| Memory | 8GB (maxed) | 5GB | **More headroom** ✅ |
-| Quality | Excellent | Excellent | **Same** ✅ |
+| Solution | Token Rate | Total Time | TTFT (warm) | Effort |
+|----------|-----------|------------|-------------|--------|
+| **Current** | 6.8 tok/s | 93s | 12s | - |
+| **Fix config + Q4** | 15-25 tok/s | 35s | 2-5s | Medium |
+| **Mistral 7B** | 40-60 tok/s | 12s | <1s | Easy |
 
-**Just change `LLM_MODEL=mistral` and restart. That's it!**
+**Next step:** Run the diagnostic commands above to see what needs fixing!
