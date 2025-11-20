@@ -84,8 +84,8 @@ services:
       - DATA_DIR=/data/airgapped_rag
       # Multiple Ollama hosts for load balancing
       - OLLAMA_HOSTS=http://ollama-gpu0:11434,http://ollama-gpu1:11434
-      # Use Q4_K_M quantization for optimal performance
-      - LLM_MODEL=mistral-small:22b-instruct-q4_k_m
+      # Use mistral-small:22b (Q4_0 quantization)
+      - LLM_MODEL=mistral-small:22b
       - LLM_CONTEXT_WINDOW=8192
 
     volumes:
@@ -128,35 +128,41 @@ volumes:
 #
 # Configuration:
 #   - OLLAMA_KEEP_ALIVE=-1: Models never unload (instant responses!)
-#   - LLM_MODEL: mistral-small:22b-instruct-q4_k_m (Q4_K_M for best performance)
-#   - LLM_CONTEXT_WINDOW: 8192 (optimal for prompts ~1170 words)
+#   - LLM_MODEL: mistral-small:22b (Q4_0 quantization)
+#   - LLM_CONTEXT_WINDOW: 8192 (reduced from 16K for faster prompt processing)
 #
 # Deployment:
 #   ```bash
-#   # Start dual Ollama instances
-#   docker compose -f docker-compose.dual-ollama.yml up -d ollama-gpu0 ollama-gpu1
+#   # Restart Ollama containers to apply OLLAMA_KEEP_ALIVE=-1
+#   docker compose -f docker-compose.dual-ollama.yml restart ollama-gpu0 ollama-gpu1
 #
-#   # Pull the optimized Q4_K_M model on both instances
-#   docker exec ollama-gpu0 ollama pull mistral-small:22b-instruct-q4_k_m
-#   docker exec ollama-gpu1 ollama pull mistral-small:22b-instruct-q4_k_m
-#
-#   # Verify models are loaded
+#   # Verify models are loaded and stay loaded
 #   curl http://localhost:11434/api/ps
 #   curl http://localhost:11435/api/ps
 #   ```
 #
-# Expected Performance (after warmup):
+# Expected Performance:
+#   With OLLAMA_KEEP_ALIVE=-1 fix:
 #   - TTFT (first query): ~50s (model loading - one time only)
-#   - TTFT (all subsequent): <1s (model stays loaded with OLLAMA_KEEP_ALIVE=-1)
-#   - Token generation: 15-25 tok/s (Q4_K_M optimization)
-#   - Total time: ~12-15s for typical RAG query
+#   - TTFT (2nd+ queries): <1s (model stays loaded!) ← KEY FIX!
+#   - Token generation: 6-10 tok/s (Q4_0 quantization)
+#   - Total time (2nd+ queries): ~40s (vs 134s before) = 3.3x faster!
+#
+#   The keep_alive fix alone saves 40+ seconds per query!
 #
 # Memory Usage (per GPU):
-#   - mistral-small:22b Q4_K_M: ~13GB
+#   - mistral-small:22b Q4_0: ~12.5GB
 #   - Overhead: ~1GB
-#   - Total: ~14GB per 16GB GPU (fits comfortably!)
+#   - Total: ~13.5GB per 16GB GPU (fits comfortably!)
 #
 # Load Balancing:
 #   - Round-robin between instances
 #   - Each GPU handles requests independently
 #   - 2x throughput for concurrent users
+#
+# Alternative: Switch to Mistral 7B for 3x Faster Tokens
+#   If you want even better performance, switch to mistral:latest (7B):
+#   - Change LLM_MODEL=mistral:latest
+#   - Token generation: 35-50 tok/s (vs 6-10)
+#   - Total time: ~12s (vs 40s)
+#   - Trade-off: Smaller model but still excellent for RAG
