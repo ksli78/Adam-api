@@ -127,6 +127,22 @@ class AdvancedRAGPipeline:
         # Initialize load-balanced Ollama client for answer generation
         self.ollama_client = OllamaClient(hosts=OLLAMA_HOSTS, strategy="round-robin")
 
+        # Warm up Ollama model (load into GPU memory to avoid 30-60s delay on first query)
+        logger.info(f"Warming up Ollama model '{LLM_MODEL}' (loading into GPU memory)...")
+        try:
+            warmup_response = self.ollama_client.generate(
+                model=LLM_MODEL,
+                prompt="Hello",
+                options={"temperature": 0.1, "num_predict": 5},
+                stream=False,
+                keep_alive="10m"  # Keep loaded for 10 minutes
+            )
+            logger.info(f"✅ Ollama model '{LLM_MODEL}' warmed up and ready!")
+            logger.info(f"   First user query will now be fast (<2s time to first token)")
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to warm up Ollama model: {e}")
+            logger.warning(f"   First query will experience 30-60s delay for model loading")
+
         logger.info("Advanced RAG Pipeline initialized successfully!")
         logger.info(f"Document store stats: {self.document_store.get_statistics()}")
 
@@ -659,8 +675,12 @@ CITATION EXAMPLE:
 Now provide your answer with inline citations after each point:"""
 
             logger.info("Starting LLM streaming generation...")
+            logger.info(f"[TIMING] Prompt size: {len(prompt)} characters (~{len(prompt.split())} words)")
+            logger.info(f"[TIMING] LLM model: {LLM_MODEL}, context window: {LLM_CONTEXT_WINDOW}")
 
             # Call Ollama with streaming enabled
+            ollama_call_start = time.time()
+            logger.info(f"[TIMING] Calling Ollama at {ollama_call_start}...")
             response = self.ollama_client.generate(
                 model=LLM_MODEL,
                 prompt=prompt,
@@ -669,12 +689,14 @@ Now provide your answer with inline citations after each point:"""
                     "num_predict": 2000,
                     "num_ctx": LLM_CONTEXT_WINDOW
                 },
-                stream=True
+                stream=True,
+                keep_alive="10m"  # Keep model loaded for 10 minutes to avoid reload delays
             )
 
             # Stream tokens as they're generated
             full_answer = ""
             token_count = 0
+            first_token_time = None
 
             logger.info("[STREAM] Starting LLM token generation...")
 
@@ -684,6 +706,13 @@ Now provide your answer with inline citations after each point:"""
                     token = chunk.response
                     full_answer += token
                     token_count += 1
+
+                    # Track time to first token
+                    if token_count == 1:
+                        first_token_time = time.time()
+                        ttft = first_token_time - ollama_call_start
+                        logger.info(f"[TIMING] ⚠️⚠️⚠️  TIME TO FIRST TOKEN (TTFT): {ttft:.3f}s")
+                        logger.info(f"[TIMING] This is the Ollama model load + prompt processing time!")
 
                     # Replace newlines with <br> for HTML display (same as regular endpoint)
                     display_token = token.replace('\n', '<br>')
@@ -696,7 +725,14 @@ Now provide your answer with inline citations after each point:"""
                     yield f"data: {json.dumps({'type': 'token', 'content': display_token})}\n\n"
                     await asyncio.sleep(0)  # THIS IS THE KEY - yields control and flushes to client!
 
+            generation_end = time.time()
+            total_generation_time = generation_end - ollama_call_start
+            tokens_per_second = token_count / (generation_end - first_token_time) if first_token_time else 0
+
             logger.info(f"[STREAM COMPLETE] Generated {token_count} tokens, {len(full_answer)} characters")
+            logger.info(f"[TIMING] ⚠️  TOTAL LLM GENERATION TIME: {total_generation_time:.3f}s")
+            logger.info(f"[TIMING] ⚠️  TOKEN GENERATION RATE: {tokens_per_second:.1f} tokens/second")
+            logger.info(f"[TIMING] Expected: 30-50+ tokens/sec on GPU, <10 tokens/sec on CPU")
 
             # Extract which documents were actually cited in the answer
             # Citations are in format: (<span><a href="URL">FileName.pdf</a></span>)
