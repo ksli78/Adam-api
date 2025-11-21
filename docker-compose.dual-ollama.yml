@@ -11,7 +11,7 @@ services:
     environment:
       - CUDA_VISIBLE_DEVICES=0  # Only GPU 0
       - OLLAMA_KEEP_ALIVE=-1  # Keep loaded forever (never unload)
-      - OLLAMA_NUM_PARALLEL=2  # Handle 2 requests per instance
+      - OLLAMA_NUM_PARALLEL=1  # Single request per GPU to avoid memory pressure
 
     deploy:
       resources:
@@ -46,7 +46,7 @@ services:
     environment:
       - CUDA_VISIBLE_DEVICES=0  # GPU 1 (but CUDA_VISIBLE_DEVICES=0 from container's perspective)
       - OLLAMA_KEEP_ALIVE=-1  # Keep loaded forever (never unload)
-      - OLLAMA_NUM_PARALLEL=2  # Handle 2 requests per instance
+      - OLLAMA_NUM_PARALLEL=1  # Single request per GPU to avoid memory pressure
 
     deploy:
       resources:
@@ -152,8 +152,9 @@ volumes:
 #
 # Memory Usage (per GPU):
 #   - mistral-small:22b Q4_0: ~12.5GB
+#   - KV cache (num_ctx=8192): ~2GB
 #   - Overhead: ~1GB
-#   - Total: ~13.5GB per 16GB GPU (fits comfortably!)
+#   - Total: ~15.5GB per 16GB GPU (OLLAMA_NUM_PARALLEL=1 required!)
 #
 # Load Balancing:
 #   - Round-robin between instances

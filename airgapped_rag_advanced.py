@@ -68,9 +68,9 @@ OLLAMA_HOSTS = os.getenv("OLLAMA_HOSTS", "http://adam.amentumspacemissions.com:1
 LLM_MODEL = os.getenv("LLM_MODEL", "mistral")  # Mistral 7B - fast and efficient for RAG (~4GB VRAM per GPU)
 
 # LLM Context window configuration
-# Mistral Small supports up to 128K tokens, we use 16K for optimal VRAM usage
-# 16K is sufficient for ~20 documents with questions in Stage 2 selection
-LLM_CONTEXT_WINDOW = int(os.getenv("LLM_CONTEXT_WINDOW", "16384"))  # 16K tokens
+# Mistral Small supports up to 128K tokens, we use 8K for optimal VRAM usage
+# 8K is sufficient for RAG context while avoiding memory pressure on 16GB GPUs
+LLM_CONTEXT_WINDOW = int(os.getenv("LLM_CONTEXT_WINDOW", "8192"))  # 8K tokens
 
 # FastAPI app
 app = FastAPI(
