@@ -26,7 +26,13 @@ COPY feedback_store.py .
 COPY semantic_chunker.py .
 COPY document_cleaner.py .
 COPY metadata_extractor.py .
+COPY ollama_client_lb.py .
+COPY sql_routes.py .
+COPY sql_query_handler.py .
 COPY run_advanced.py .
+
+# Copy config directory
+COPY config/ ./config/
 
 # Create data directory
 RUN mkdir -p /data/airgapped_rag/documents /data/airgapped_rag/chromadb_advanced
