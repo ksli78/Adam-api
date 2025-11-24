@@ -82,11 +82,18 @@ services:
 
     environment:
       - DATA_DIR=/data/airgapped_rag
-      # Multiple Ollama hosts for load balancing
-      - OLLAMA_HOSTS=http://ollama-gpu0:11434,http://ollama-gpu1:11434
+      # Multiple Ollama hosts for load balancing (remote server)
+      - OLLAMA_HOSTS=http://adam.amentumspacemissions.com:11434,http://adam.amentumspacemissions.com:11435
       # Use mistral-small:22b (Q4_0 quantization)
       - LLM_MODEL=mistral-small:22b
       - LLM_CONTEXT_WINDOW=8192
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
 
     volumes:
       - adam-data:/data/airgapped_rag
