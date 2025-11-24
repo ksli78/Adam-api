@@ -29,6 +29,7 @@ COPY metadata_extractor.py .
 COPY ollama_client_lb.py .
 COPY sql_routes.py .
 COPY sql_query_handler.py .
+COPY conversation_manager.py .
 COPY run_advanced.py .
 
 # Copy config directory
