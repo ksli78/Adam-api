@@ -525,7 +525,8 @@ class AdvancedRAGPipeline:
         metadata_filter: Dict[str, Any] = None,
         temperature: float = 0.3,
         use_hybrid: bool = True,
-        bm25_weight: float = 0.2
+        bm25_weight: float = 0.2,
+        include_followups: bool = True
     ) -> AsyncGenerator[str, None]:
         """
         Stream query response with real-time status updates and token-by-token LLM generation.
@@ -665,6 +666,15 @@ class AdvancedRAGPipeline:
 
             # Step 4: Stream LLM response token by token
             # Use EXACT SAME PROMPT as regular endpoint for consistent quality
+            # Optionally include follow-up question generation inline to avoid separate LLM call
+            followup_instruction = ""
+            if include_followups:
+                followup_instruction = """
+
+After your answer, add a line "###FOLLOWUPS###" and then list 2-3 follow-up questions the user might ask, one per line.
+Example follow-ups: "How much PTO do I accrue?", "Who approves my requests?", "When can I start using benefits?"
+"""
+
             prompt = f"""Answer the following question using ONLY the information from the documents provided below.
 
 QUESTION:
@@ -679,7 +689,7 @@ INSTRUCTIONS:
 - Include specific details (section numbers, dates, amounts) when relevant
 - IMPORTANT: Add inline citations after EACH claim or bullet point using this format: (<span><a href="URL">FileName.pdf</a></span>)
 - Place citations immediately after the relevant statement, before the period
-- If information is missing, clearly state what cannot be answered
+- If information is missing, clearly state what cannot be answered{followup_instruction}
 
 CITATION EXAMPLE:
 ✓ CORRECT: "Employees must submit requests via the Decisions tool (<span><a href="https://...">EN-PO-0301.pdf</a></span>)."
@@ -775,12 +785,37 @@ Now provide your answer with inline citations after each point:"""
             yield f"data: {json.dumps({'type': 'sources', 'citations': filtered_citations})}\n\n"
             await asyncio.sleep(0)
 
-            # Generate and send follow-up question suggestions (separate LLM call)
-            followup_questions = await self.generate_followup_questions(
-                question=question,
-                answer=full_answer,
-                citations=filtered_citations
-            )
+            # Parse follow-up questions from inline response or generate separately
+            if include_followups:
+                # INLINE: Parse follow-ups from the answer (NO extra LLM call!)
+                if "###FOLLOWUPS###" in full_answer:
+                    # Split answer and follow-ups
+                    parts = full_answer.split("###FOLLOWUPS###", 1)
+                    clean_answer = parts[0].strip()
+                    followups_text = parts[1].strip()
+
+                    # Parse follow-up questions (one per line, remove numbering)
+                    followup_questions = [q.strip() for q in followups_text.split('\n') if q.strip()]
+                    followup_questions = [re.sub(r'^[\d\.\-\*\)]+\s*', '', q) for q in followup_questions]
+                    followup_questions = followup_questions[:3]  # Limit to 3
+
+                    # Update full_answer to remove follow-ups section for stats
+                    full_answer = clean_answer
+
+                    logger.info(f"[INLINE FOLLOWUPS] Extracted {len(followup_questions)} follow-up questions from response")
+                else:
+                    # LLM didn't include follow-ups, generate empty list
+                    followup_questions = []
+                    logger.warning("[INLINE FOLLOWUPS] Marker ###FOLLOWUPS### not found in response")
+            else:
+                # SEPARATE LLM CALL: Use old method (slower but more reliable)
+                logger.info("[FOLLOWUPS] Generating follow-ups with separate LLM call...")
+                followup_questions = await self.generate_followup_questions(
+                    question=question,
+                    answer=full_answer,
+                    citations=filtered_citations
+                )
+
             yield f"data: {json.dumps({'type': 'followups', 'questions': followup_questions})}\n\n"
             await asyncio.sleep(0)
 
@@ -1334,6 +1369,7 @@ class QueryRequest(BaseModel):
     use_hybrid: bool = True  # Use hybrid search (BM25 + semantic) by default
     bm25_weight: float = 0.2  # Weight for BM25 (0.2 = 80% semantic, 20% BM25)
     use_llm_selection: bool = False  # DEPRECATED: Use semantic reranking instead
+    include_followups: bool = True  # Generate follow-up questions inline (faster, no extra LLM call)
 
 
 class QueryResponse(BaseModel):
@@ -1501,7 +1537,8 @@ async def query_stream_endpoint(request: QueryRequest):
                 metadata_filter=request.metadata_filter,
                 temperature=request.temperature,
                 use_hybrid=request.use_hybrid,
-                bm25_weight=request.bm25_weight
+                bm25_weight=request.bm25_weight,
+                include_followups=request.include_followups
             ),
             media_type="text/event-stream",
             headers={
