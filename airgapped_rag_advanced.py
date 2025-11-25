@@ -1458,12 +1458,17 @@ async def query(request: QueryRequest):
                 bm25_weight=request.bm25_weight
             )
 
-        # Generate follow-up question suggestions
-        followup_questions = await rag_pipeline.generate_followup_questions(
-            question=request.prompt,
-            answer=result['answer'],
-            citations=result['citations']
-        )
+        # Conditionally generate follow-up question suggestions
+        if request.include_followups:
+            followup_questions = await rag_pipeline.generate_followup_questions(
+                question=request.prompt,
+                answer=result['answer'],
+                citations=result['citations']
+            )
+        else:
+            followup_questions = []
+            logger.info("[FOLLOWUPS] Skipped - include_followups=False")
+
         result['suggested_followups'] = followup_questions
 
         return result
