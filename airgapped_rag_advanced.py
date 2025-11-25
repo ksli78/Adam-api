@@ -68,9 +68,9 @@ OLLAMA_HOSTS = os.getenv("OLLAMA_HOSTS", "http://adam.amentumspacemissions.com:1
 LLM_MODEL = os.getenv("LLM_MODEL", "mistral")  # Mistral 7B - fast and efficient for RAG (~4GB VRAM per GPU)
 
 # LLM Context window configuration
-# Mistral Small supports up to 128K tokens, we use 16K for optimal VRAM usage
-# 16K is sufficient for ~20 documents with questions in Stage 2 selection
-LLM_CONTEXT_WINDOW = int(os.getenv("LLM_CONTEXT_WINDOW", "16384"))  # 16K tokens
+# Mistral Small supports up to 128K tokens, we use 8K for optimal VRAM usage
+# 8K is sufficient for RAG context while avoiding memory pressure on 16GB GPUs
+LLM_CONTEXT_WINDOW = int(os.getenv("LLM_CONTEXT_WINDOW", "8192"))  # 8K tokens
 
 # FastAPI app
 app = FastAPI(
@@ -126,6 +126,35 @@ class AdvancedRAGPipeline:
 
         # Initialize load-balanced Ollama client for answer generation
         self.ollama_client = OllamaClient(hosts=OLLAMA_HOSTS, strategy="round-robin")
+
+        # Warm up Ollama model on ALL instances (load into GPU memory to avoid 30-60s delay)
+        # IMPORTANT: Must warm up each instance separately to ensure load balancer works smoothly
+        logger.info(f"Warming up Ollama model '{LLM_MODEL}' on ALL instances...")
+        warmed_instances = 0
+        for i, host in enumerate(OLLAMA_HOSTS):
+            try:
+                logger.info(f"  Warming instance {i+1}/{len(OLLAMA_HOSTS)}: {host}")
+                single_client = OllamaClient(host=host)
+                warmup_response = single_client.generate(
+                    model=LLM_MODEL,
+                    prompt="Hello",
+                    options={"temperature": 0.1, "num_predict": 5},
+                    stream=False,
+                    keep_alive="10m"  # Keep loaded for 10 minutes
+                )
+                warmed_instances += 1
+                logger.info(f"  ✅ Instance {i+1} ready: {host}")
+            except Exception as e:
+                logger.warning(f"  ⚠️  Instance {i+1} failed: {host} - {e}")
+
+        if warmed_instances == len(OLLAMA_HOSTS):
+            logger.info(f"✅ All {warmed_instances} Ollama instances warmed up and ready!")
+            logger.info(f"   Load balancer will distribute queries across all instances")
+        elif warmed_instances > 0:
+            logger.warning(f"⚠️  Only {warmed_instances}/{len(OLLAMA_HOSTS)} instances warmed up")
+            logger.warning(f"   Some queries may experience delays if routed to cold instances")
+        else:
+            logger.warning(f"⚠️  No instances warmed up! All queries will experience model loading delays")
 
         logger.info("Advanced RAG Pipeline initialized successfully!")
         logger.info(f"Document store stats: {self.document_store.get_statistics()}")
@@ -496,7 +525,8 @@ class AdvancedRAGPipeline:
         metadata_filter: Dict[str, Any] = None,
         temperature: float = 0.3,
         use_hybrid: bool = True,
-        bm25_weight: float = 0.2
+        bm25_weight: float = 0.2,
+        include_followups: bool = True
     ) -> AsyncGenerator[str, None]:
         """
         Stream query response with real-time status updates and token-by-token LLM generation.
@@ -515,6 +545,8 @@ class AdvancedRAGPipeline:
             SSE-formatted JSON messages
         """
         try:
+            import time
+            stream_start_time = time.time()
             logger.info(f"[STREAM START] Processing streaming query: {question[:100]}...")
 
             # Yield initial status - CRITICAL: await asyncio.sleep(0) after EVERY yield to flush
@@ -522,6 +554,8 @@ class AdvancedRAGPipeline:
             await asyncio.sleep(0)  # Force async event loop to flush to client
 
             # Step 1: Use hybrid search to get top 30 candidates (casts wide net)
+            retrieval_start = time.time()
+            logger.info(f"[TIMING] Starting document retrieval...")
             child_results, _ = self.document_store.retrieve_with_parent_expansion(
                 query=question,
                 top_k=30,  # Get more candidates for reranking
@@ -530,6 +564,8 @@ class AdvancedRAGPipeline:
                 use_hybrid=use_hybrid,
                 bm25_weight=bm25_weight
             )
+            retrieval_end = time.time()
+            logger.info(f"[TIMING] ⚠️  DOCUMENT RETRIEVAL took {retrieval_end - retrieval_start:.3f}s")
 
             # Check if we have insufficient results
             MIN_CHUNKS_THRESHOLD = 1
@@ -551,6 +587,8 @@ class AdvancedRAGPipeline:
             top_semantic_chunks = child_results_reranked[:SEMANTIC_TOP_K]
 
             # Step 3: Expand top semantic chunks to parents
+            parent_expand_start = time.time()
+            logger.info(f"[TIMING] Expanding to parent chunks...")
             top_child_ids = [chunk['id'] for chunk in top_semantic_chunks]
             parent_ids_seen = set()
             parent_results = []
@@ -582,6 +620,8 @@ class AdvancedRAGPipeline:
                     except Exception as e:
                         logger.warning(f"Failed to fetch parent {parent_id}: {e}")
 
+            parent_expand_end = time.time()
+            logger.info(f"[TIMING] Parent expansion took {parent_expand_end - parent_expand_start:.3f}s")
             logger.info(f"Expanded to {len(parent_results)} parent chunks")
 
             if not parent_results:
@@ -616,11 +656,25 @@ class AdvancedRAGPipeline:
                 })
 
             # Don't send citations yet - wait until after answer is generated so we can filter
+            before_llm_time = time.time()
+            time_to_llm = before_llm_time - stream_start_time
+            logger.info(f"[TIMING] ⚠️⚠️⚠️  TOTAL TIME BEFORE LLM STREAMING: {time_to_llm:.3f}s")
+            logger.info(f"[TIMING] This is the delay users experience before seeing tokens!")
+
             yield f"data: {json.dumps({'type': 'status', 'message': 'Generating answer...'})}\n\n"
             await asyncio.sleep(0)
 
             # Step 4: Stream LLM response token by token
             # Use EXACT SAME PROMPT as regular endpoint for consistent quality
+            # Optionally include follow-up question generation inline to avoid separate LLM call
+            followup_instruction = ""
+            if include_followups:
+                followup_instruction = """
+
+After your answer, add a line "###FOLLOWUPS###" and then list 2-3 follow-up questions the user might ask, one per line.
+Example follow-ups: "How much PTO do I accrue?", "Who approves my requests?", "When can I start using benefits?"
+"""
+
             prompt = f"""Answer the following question using ONLY the information from the documents provided below.
 
 QUESTION:
@@ -635,7 +689,7 @@ INSTRUCTIONS:
 - Include specific details (section numbers, dates, amounts) when relevant
 - IMPORTANT: Add inline citations after EACH claim or bullet point using this format: (<span><a href="URL">FileName.pdf</a></span>)
 - Place citations immediately after the relevant statement, before the period
-- If information is missing, clearly state what cannot be answered
+- If information is missing, clearly state what cannot be answered{followup_instruction}
 
 CITATION EXAMPLE:
 ✓ CORRECT: "Employees must submit requests via the Decisions tool (<span><a href="https://...">EN-PO-0301.pdf</a></span>)."
@@ -644,8 +698,12 @@ CITATION EXAMPLE:
 Now provide your answer with inline citations after each point:"""
 
             logger.info("Starting LLM streaming generation...")
+            logger.info(f"[TIMING] Prompt size: {len(prompt)} characters (~{len(prompt.split())} words)")
+            logger.info(f"[TIMING] LLM model: {LLM_MODEL}, context window: {LLM_CONTEXT_WINDOW}")
 
             # Call Ollama with streaming enabled
+            ollama_call_start = time.time()
+            logger.info(f"[TIMING] Calling Ollama at {ollama_call_start}...")
             response = self.ollama_client.generate(
                 model=LLM_MODEL,
                 prompt=prompt,
@@ -654,12 +712,14 @@ Now provide your answer with inline citations after each point:"""
                     "num_predict": 2000,
                     "num_ctx": LLM_CONTEXT_WINDOW
                 },
-                stream=True
+                stream=True,
+                keep_alive="10m"  # Keep model loaded for 10 minutes to avoid reload delays
             )
 
             # Stream tokens as they're generated
             full_answer = ""
             token_count = 0
+            first_token_time = None
 
             logger.info("[STREAM] Starting LLM token generation...")
 
@@ -669,6 +729,13 @@ Now provide your answer with inline citations after each point:"""
                     token = chunk.response
                     full_answer += token
                     token_count += 1
+
+                    # Track time to first token
+                    if token_count == 1:
+                        first_token_time = time.time()
+                        ttft = first_token_time - ollama_call_start
+                        logger.info(f"[TIMING] ⚠️⚠️⚠️  TIME TO FIRST TOKEN (TTFT): {ttft:.3f}s")
+                        logger.info(f"[TIMING] This is the Ollama model load + prompt processing time!")
 
                     # Replace newlines with <br> for HTML display (same as regular endpoint)
                     display_token = token.replace('\n', '<br>')
@@ -681,7 +748,14 @@ Now provide your answer with inline citations after each point:"""
                     yield f"data: {json.dumps({'type': 'token', 'content': display_token})}\n\n"
                     await asyncio.sleep(0)  # THIS IS THE KEY - yields control and flushes to client!
 
+            generation_end = time.time()
+            total_generation_time = generation_end - ollama_call_start
+            tokens_per_second = token_count / (generation_end - first_token_time) if first_token_time else 0
+
             logger.info(f"[STREAM COMPLETE] Generated {token_count} tokens, {len(full_answer)} characters")
+            logger.info(f"[TIMING] ⚠️  TOTAL LLM GENERATION TIME: {total_generation_time:.3f}s")
+            logger.info(f"[TIMING] ⚠️  TOKEN GENERATION RATE: {tokens_per_second:.1f} tokens/second")
+            logger.info(f"[TIMING] Expected: 30-50+ tokens/sec on GPU, <10 tokens/sec on CPU")
 
             # Extract which documents were actually cited in the answer
             # Citations are in format: (<span><a href="URL">FileName.pdf</a></span>)
@@ -711,12 +785,33 @@ Now provide your answer with inline citations after each point:"""
             yield f"data: {json.dumps({'type': 'sources', 'citations': filtered_citations})}\n\n"
             await asyncio.sleep(0)
 
-            # Generate and send follow-up question suggestions (separate LLM call)
-            followup_questions = await self.generate_followup_questions(
-                question=question,
-                answer=full_answer,
-                citations=filtered_citations
-            )
+            # Parse follow-up questions from inline response or skip entirely
+            if include_followups:
+                # INLINE: Parse follow-ups from the answer (NO extra LLM call!)
+                if "###FOLLOWUPS###" in full_answer:
+                    # Split answer and follow-ups
+                    parts = full_answer.split("###FOLLOWUPS###", 1)
+                    clean_answer = parts[0].strip()
+                    followups_text = parts[1].strip()
+
+                    # Parse follow-up questions (one per line, remove numbering)
+                    followup_questions = [q.strip() for q in followups_text.split('\n') if q.strip()]
+                    followup_questions = [re.sub(r'^[\d\.\-\*\)]+\s*', '', q) for q in followup_questions]
+                    followup_questions = followup_questions[:3]  # Limit to 3
+
+                    # Update full_answer to remove follow-ups section for stats
+                    full_answer = clean_answer
+
+                    logger.info(f"[INLINE FOLLOWUPS] Extracted {len(followup_questions)} follow-up questions from response")
+                else:
+                    # LLM didn't include follow-ups, generate empty list
+                    followup_questions = []
+                    logger.warning("[INLINE FOLLOWUPS] Marker ###FOLLOWUPS### not found in response")
+            else:
+                # DISABLED: User set include_followups=False, skip entirely
+                followup_questions = []
+                logger.info("[FOLLOWUPS] Skipped - include_followups=False")
+
             yield f"data: {json.dumps({'type': 'followups', 'questions': followup_questions})}\n\n"
             await asyncio.sleep(0)
 
@@ -1270,6 +1365,7 @@ class QueryRequest(BaseModel):
     use_hybrid: bool = True  # Use hybrid search (BM25 + semantic) by default
     bm25_weight: float = 0.2  # Weight for BM25 (0.2 = 80% semantic, 20% BM25)
     use_llm_selection: bool = False  # DEPRECATED: Use semantic reranking instead
+    include_followups: bool = True  # Generate follow-up questions inline (faster, no extra LLM call)
 
 
 class QueryResponse(BaseModel):
@@ -1362,12 +1458,17 @@ async def query(request: QueryRequest):
                 bm25_weight=request.bm25_weight
             )
 
-        # Generate follow-up question suggestions
-        followup_questions = await rag_pipeline.generate_followup_questions(
-            question=request.prompt,
-            answer=result['answer'],
-            citations=result['citations']
-        )
+        # Conditionally generate follow-up question suggestions
+        if request.include_followups:
+            followup_questions = await rag_pipeline.generate_followup_questions(
+                question=request.prompt,
+                answer=result['answer'],
+                citations=result['citations']
+            )
+        else:
+            followup_questions = []
+            logger.info("[FOLLOWUPS] Skipped - include_followups=False")
+
         result['suggested_followups'] = followup_questions
 
         return result
@@ -1427,6 +1528,7 @@ async def query_stream_endpoint(request: QueryRequest):
     """
     try:
         logger.info(f"[ENDPOINT CALLED] /query-stream endpoint invoked for query: {request.prompt[:100]}")
+        logger.info(f"[DEBUG] include_followups parameter value: {request.include_followups} (type: {type(request.include_followups).__name__})")
 
         # Generate streaming response
         return StreamingResponse(
@@ -1437,7 +1539,8 @@ async def query_stream_endpoint(request: QueryRequest):
                 metadata_filter=request.metadata_filter,
                 temperature=request.temperature,
                 use_hybrid=request.use_hybrid,
-                bm25_weight=request.bm25_weight
+                bm25_weight=request.bm25_weight,
+                include_followups=request.include_followups
             ),
             media_type="text/event-stream",
             headers={

@@ -201,15 +201,20 @@ class ParentChildDocumentStore:
 
         # Detect GPU availability
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        logger.info(f"Using device: {device}")
+        logger.info(f"⚠️  Using device for embeddings: {device}")
         if device == "cuda":
-            logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
+            logger.info(f"✅ GPU detected: {torch.cuda.get_device_name(0)}")
+            logger.info(f"GPU count: {torch.cuda.device_count()}")
+        else:
+            logger.warning(f"⚠️⚠️⚠️  NO GPU DETECTED! Embeddings will run on CPU which is VERY SLOW!")
+            logger.warning(f"This will cause 10-60 second delays for RAG queries!")
 
         # Initialize sentence-transformers for embeddings
         logger.info(f"Loading embedding model: {embedding_model}")
         self.embedding_model = SentenceTransformer(embedding_model, device=device)
         self.embedding_dim = self.embedding_model.get_sentence_embedding_dimension()
         logger.info(f"Embedding dimension: {self.embedding_dim}")
+        logger.info(f"Embedding model device: {self.embedding_model.device}")
 
         # Initialize ChromaDB client
         self.client = chromadb.PersistentClient(
@@ -399,8 +404,13 @@ class ParentChildDocumentStore:
         Returns:
             List of child chunk results
         """
+        import time
+        start_time = time.time()
+
         # Expand acronyms to help semantic understanding
         expanded_query = expand_query_acronyms(query)
+        acronym_time = time.time()
+        logger.info(f"[TIMING] Acronym expansion took {acronym_time - start_time:.3f}s")
 
         # For e5 models, prefix queries with "query: " for best performance
         # https://huggingface.co/intfloat/e5-large-v2
@@ -411,20 +421,28 @@ class ParentChildDocumentStore:
             query_text = expanded_query
 
         # Generate query embedding (using expanded query for better semantic match)
+        embed_start = time.time()
+        logger.info(f"[TIMING] Starting embedding generation for query: {query[:50]}...")
         query_embedding = self.embedding_model.encode(
             query_text,
             convert_to_numpy=True
         ).tolist()
+        embed_end = time.time()
+        logger.info(f"[TIMING] ⚠️  EMBEDDING GENERATION took {embed_end - embed_start:.3f}s")
 
         # Search child collection
         where_filter = metadata_filter if metadata_filter else None
 
+        chroma_start = time.time()
+        logger.info(f"[TIMING] Starting ChromaDB query (top_k={top_k})...")
         child_results = self.child_collection.query(
             query_embeddings=[query_embedding],
             n_results=top_k,
             where=where_filter,
             include=["documents", "metadatas", "distances"]
         )
+        chroma_end = time.time()
+        logger.info(f"[TIMING] ⚠️  CHROMADB QUERY took {chroma_end - chroma_start:.3f}s")
 
         # Format child results
         child_chunks = []
@@ -483,12 +501,17 @@ class ParentChildDocumentStore:
 
         # Step 2: Get chunks for BM25 scoring
         # Only get chunks from semantic results (much more efficient than indexing all chunks)
+        import time
+        chunk_fetch_start = time.time()
         chunk_ids = [r['id'] for r in semantic_results]
+        logger.info(f"[TIMING] Fetching {len(chunk_ids)} chunks for BM25...")
 
         chunks_for_bm25 = self.child_collection.get(
             ids=chunk_ids,
             include=["documents", "metadatas"]
         )
+        chunk_fetch_end = time.time()
+        logger.info(f"[TIMING] Chunk fetch for BM25 took {chunk_fetch_end - chunk_fetch_start:.3f}s")
 
         # Extract just the content text for BM25 (remove metadata prefix)
         # Chunk format: "Document: XXX.pdf | Section: YYY\n\n[content]"
@@ -505,12 +528,20 @@ class ParentChildDocumentStore:
                 bm25_texts.append(doc)
 
         # Step 3: Build BM25 index and get scores
+        import time
+        bm25_start = time.time()
+        logger.info(f"[TIMING] Building BM25 index for {len(bm25_texts)} documents...")
         tokenized_corpus = [tokenize_for_bm25(text) for text in bm25_texts]
         bm25 = BM25Okapi(tokenized_corpus)
+        bm25_index_time = time.time()
+        logger.info(f"[TIMING] BM25 index built in {bm25_index_time - bm25_start:.3f}s")
 
         tokenized_query = tokenize_for_bm25(query)
         logger.info(f"BM25 query tokens (stop words filtered): {tokenized_query}")
         bm25_scores = bm25.get_scores(tokenized_query)
+        bm25_score_time = time.time()
+        logger.info(f"[TIMING] BM25 scoring took {bm25_score_time - bm25_index_time:.3f}s")
+        logger.info(f"[TIMING] ⚠️  TOTAL BM25 (index + score) took {bm25_score_time - bm25_start:.3f}s")
 
         # Normalize BM25 scores to 0-1 range
         if max(bm25_scores) > 0:
