@@ -146,6 +146,7 @@ class SQLQueryHandler:
                 f"SERVER={conn_cfg['server']},{conn_cfg['port']};"
                 f"DATABASE={conn_cfg['database']};"
                 f"Trusted_Connection=yes;"
+                f"TrustServerCertificate=yes;"
             )
         else:
             # SQL Server Authentication
@@ -155,6 +156,7 @@ class SQLQueryHandler:
                 f"DATABASE={conn_cfg['database']};"
                 f"UID={conn_cfg['user']};"
                 f"PWD={self.password};"
+                f"TrustServerCertificate=yes;"
             )
 
         return conn_str
