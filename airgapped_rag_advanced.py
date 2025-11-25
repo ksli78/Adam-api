@@ -1528,6 +1528,7 @@ async def query_stream_endpoint(request: QueryRequest):
     """
     try:
         logger.info(f"[ENDPOINT CALLED] /query-stream endpoint invoked for query: {request.prompt[:100]}")
+        logger.info(f"[DEBUG] include_followups parameter value: {request.include_followups} (type: {type(request.include_followups).__name__})")
 
         # Generate streaming response
         return StreamingResponse(
