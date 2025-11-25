@@ -87,6 +87,8 @@ services:
       # Use mistral:latest 7B (Q4_K_M quantization) - faster and less memory
       - LLM_MODEL=mistral:latest
       - LLM_CONTEXT_WINDOW=32768
+      # SQL Server authentication (set in .env file)
+      - EMPLOYEE_DB_PASSWORD=${EMPLOYEE_DB_PASSWORD}
 
     deploy:
       resources:
