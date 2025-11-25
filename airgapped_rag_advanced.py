@@ -785,7 +785,7 @@ Now provide your answer with inline citations after each point:"""
             yield f"data: {json.dumps({'type': 'sources', 'citations': filtered_citations})}\n\n"
             await asyncio.sleep(0)
 
-            # Parse follow-up questions from inline response or generate separately
+            # Parse follow-up questions from inline response or skip entirely
             if include_followups:
                 # INLINE: Parse follow-ups from the answer (NO extra LLM call!)
                 if "###FOLLOWUPS###" in full_answer:
@@ -808,13 +808,9 @@ Now provide your answer with inline citations after each point:"""
                     followup_questions = []
                     logger.warning("[INLINE FOLLOWUPS] Marker ###FOLLOWUPS### not found in response")
             else:
-                # SEPARATE LLM CALL: Use old method (slower but more reliable)
-                logger.info("[FOLLOWUPS] Generating follow-ups with separate LLM call...")
-                followup_questions = await self.generate_followup_questions(
-                    question=question,
-                    answer=full_answer,
-                    citations=filtered_citations
-                )
+                # DISABLED: User set include_followups=False, skip entirely
+                followup_questions = []
+                logger.info("[FOLLOWUPS] Skipped - include_followups=False")
 
             yield f"data: {json.dumps({'type': 'followups', 'questions': followup_questions})}\n\n"
             await asyncio.sleep(0)
