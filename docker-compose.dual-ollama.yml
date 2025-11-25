@@ -84,9 +84,9 @@ services:
       - DATA_DIR=/data/airgapped_rag
       # Multiple Ollama hosts for load balancing (remote server)
       - OLLAMA_HOSTS=http://adam.amentumspacemissions.com:11434,http://adam.amentumspacemissions.com:11435
-      # Use mistral-small:22b (Q4_0 quantization)
-      - LLM_MODEL=mistral-small:22b
-      - LLM_CONTEXT_WINDOW=8192
+      # Use mistral:latest 7B (Q4_K_M quantization) - faster and less memory
+      - LLM_MODEL=mistral:latest
+      - LLM_CONTEXT_WINDOW=32768
 
     deploy:
       resources:
@@ -135,8 +135,8 @@ volumes:
 #
 # Configuration:
 #   - OLLAMA_KEEP_ALIVE=-1: Models never unload (instant responses!)
-#   - LLM_MODEL: mistral-small:22b (Q4_0 quantization)
-#   - LLM_CONTEXT_WINDOW: 8192 (reduced from 16K for faster prompt processing)
+#   - LLM_MODEL: mistral:latest 7B (Q4_K_M quantization)
+#   - LLM_CONTEXT_WINDOW: 32768 (32K tokens for large contexts)
 #
 # Deployment:
 #   ```bash
@@ -148,29 +148,29 @@ volumes:
 #   curl http://localhost:11435/api/ps
 #   ```
 #
-# Expected Performance:
-#   With OLLAMA_KEEP_ALIVE=-1 fix:
-#   - TTFT (first query): ~50s (model loading - one time only)
-#   - TTFT (2nd+ queries): <1s (model stays loaded!) ← KEY FIX!
-#   - Token generation: 6-10 tok/s (Q4_0 quantization)
-#   - Total time (2nd+ queries): ~40s (vs 134s before) = 3.3x faster!
-#
-#   The keep_alive fix alone saves 40+ seconds per query!
+# Expected Performance (mistral:latest 7B Q4_K_M):
+#   With OLLAMA_KEEP_ALIVE=-1 and mistral:latest:
+#   - TTFT (first query): ~15-20s (model loading - one time only, faster than 22B)
+#   - TTFT (2nd+ queries): <1s (model stays loaded!)
+#   - Token generation: 35-50 tok/s (Q4_K_M quantization) ← 5x FASTER than mistral-small!
+#   - Total time (2nd+ queries): ~12-15s (vs 40s with mistral-small)
 #
 # Memory Usage (per GPU):
-#   - mistral-small:22b Q4_0: ~12.5GB
-#   - KV cache (num_ctx=8192): ~2GB
+#   - mistral:latest 7B Q4_K_M: ~4GB (vs 12.5GB for 22B)
+#   - KV cache (num_ctx=32768): ~2-3GB
+#   - Embeddings (e5-large-v2): ~2GB
 #   - Overhead: ~1GB
-#   - Total: ~15.5GB per 16GB GPU (OLLAMA_NUM_PARALLEL=1 required!)
+#   - Total: ~9-10GB per 16GB GPU (plenty of headroom!)
 #
 # Load Balancing:
 #   - Round-robin between instances
 #   - Each GPU handles requests independently
 #   - 2x throughput for concurrent users
+#   - Faster responses = better user experience
 #
-# Alternative: Switch to Mistral 7B for 3x Faster Tokens
-#   If you want even better performance, switch to mistral:latest (7B):
-#   - Change LLM_MODEL=mistral:latest
-#   - Token generation: 35-50 tok/s (vs 6-10)
-#   - Total time: ~12s (vs 40s)
-#   - Trade-off: Smaller model but still excellent for RAG
+# Why mistral:latest 7B instead of mistral-small 22B?
+#   - 5x faster token generation (35-50 vs 6-10 tok/s)
+#   - 3x less memory (~4GB vs ~12.5GB)
+#   - No OOM errors during document ingestion
+#   - Still excellent quality for RAG tasks
+#   - Can upgrade to larger models when 90GB GPU arrives
