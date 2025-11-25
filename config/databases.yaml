@@ -11,9 +11,9 @@ employee_directory:
     database: "Corporate"
     user: "svcasm-adamAi"
     password_env: "EMPLOYEE_DB_PASSWORD"  # Set via environment variable
-    driver: "ODBC Driver 17 for SQL Server"
-    # For Windows Authentication in production, set use_windows_auth: true
-    use_windows_auth: true
+    driver: "ODBC Driver 18 for SQL Server"
+    # For SQL Authentication (default). Set use_windows_auth: true for Windows Auth
+    use_windows_auth: false
 
   security:
     max_rows: 1000
