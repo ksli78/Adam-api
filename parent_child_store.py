@@ -21,7 +21,7 @@ from typing import List, Dict, Any, Tuple, Optional
 from pathlib import Path
 import chromadb
 from chromadb.config import Settings
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 import numpy as np
 from rank_bm25 import BM25Okapi
 import torch
@@ -233,12 +233,116 @@ class ParentChildDocumentStore:
             metadata={"description": "Large chunks for LLM context"}
         )
 
+        # Initialize cross-encoder re-ranker for improved precision
+        # Using Microsoft's MS-MARCO model (non-Chinese, good quality)
+        logger.info("Loading cross-encoder re-ranker: cross-encoder/ms-marco-MiniLM-L-12-v2")
+        self.reranker = CrossEncoder(
+            "cross-encoder/ms-marco-MiniLM-L-12-v2",
+            device=device,
+            max_length=512  # Limit input length for speed
+        )
+        logger.info("Cross-encoder re-ranker loaded successfully")
+
         logger.info(
             f"ParentChildDocumentStore initialized: "
             f"persist={persist_directory}, "
             f"children={self.child_collection.count()}, "
             f"parents={self.parent_collection.count()}"
         )
+
+    def _estimate_query_type(self, query: str) -> Tuple[str, float]:
+        """
+        Estimate if query is keyword-heavy or semantic-heavy.
+
+        Returns recommended BM25 weight adjustment based on query characteristics.
+
+        Args:
+            query: User's query
+
+        Returns:
+            Tuple of (query_type, recommended_bm25_weight)
+        """
+        import re
+
+        query_upper = query.upper()
+        words = query.split()
+
+        # Check for specific identifiers that benefit from keyword matching
+        has_policy_number = bool(re.search(r'[A-Z]{2}-[A-Z]{2}-\d{4}', query_upper))  # EN-PO-0301
+        has_section_number = bool(re.search(r'\d+\.\d+', query))  # 4.3, 5.1.2
+        has_acronyms = any(w.isupper() and len(w) >= 2 and w.isalpha() for w in words)
+        has_quoted_phrase = '"' in query or "'" in query
+
+        # Count indicators
+        keyword_indicators = sum([
+            has_policy_number,
+            has_section_number,
+            has_acronyms,
+            has_quoted_phrase
+        ])
+
+        if keyword_indicators >= 2:
+            logger.info(f"[ADAPTIVE BM25] Query type: KEYWORD (indicators: {keyword_indicators})")
+            return ("keyword", 0.5)  # 50% BM25, 50% semantic
+        elif keyword_indicators == 1:
+            logger.info(f"[ADAPTIVE BM25] Query type: MIXED (indicators: {keyword_indicators})")
+            return ("mixed", 0.35)  # 35% BM25, 65% semantic
+        else:
+            logger.info(f"[ADAPTIVE BM25] Query type: SEMANTIC (indicators: {keyword_indicators})")
+            return ("semantic", 0.2)  # 20% BM25, 80% semantic (original default)
+
+    def rerank_with_cross_encoder(
+        self,
+        query: str,
+        results: List[Dict[str, Any]],
+        top_k: int = 10
+    ) -> List[Dict[str, Any]]:
+        """
+        Re-rank search results using cross-encoder for improved precision.
+
+        Cross-encoders compare query-document pairs directly, providing
+        much better relevance scoring than bi-encoder similarity alone.
+
+        Args:
+            query: Original user query
+            results: List of search results with 'text' field
+            top_k: Number of results to return after re-ranking
+
+        Returns:
+            Re-ranked results with 'rerank_score' field added
+        """
+        if not results:
+            return results
+
+        import time
+        rerank_start = time.time()
+
+        # Prepare query-document pairs for cross-encoder
+        # Use only the content portion, not metadata prefix
+        pairs = []
+        for r in results:
+            text = r.get('text', '')
+            # Remove metadata prefix if present (format: "Document: X | Section: Y\n\n[content]")
+            if '\n\n' in text:
+                text = text.split('\n\n', 1)[-1]
+            pairs.append((query, text[:512]))  # Truncate for speed
+
+        # Get cross-encoder scores
+        scores = self.reranker.predict(pairs, show_progress_bar=False)
+
+        # Add rerank scores to results
+        for i, result in enumerate(results):
+            result['rerank_score'] = float(scores[i])
+
+        # Sort by rerank score (descending)
+        reranked = sorted(results, key=lambda x: x['rerank_score'], reverse=True)
+
+        rerank_time = time.time() - rerank_start
+        logger.info(f"[RERANKER] Re-ranked {len(results)} results in {rerank_time:.3f}s")
+        if reranked:
+            logger.info(f"[RERANKER] Top score: {reranked[0]['rerank_score']:.3f} -> {reranked[0].get('metadata', {}).get('section_title', 'Unknown')[:50]}")
+
+        return reranked[:top_k]
 
     def add_document_chunks(
         self,
@@ -337,7 +441,9 @@ class ParentChildDocumentStore:
         parent_limit: int = 3,
         metadata_filter: Dict[str, Any] = None,
         use_hybrid: bool = True,
-        bm25_weight: float = 0.5
+        bm25_weight: float = 0.5,
+        use_reranker: bool = True,
+        hyde_document: str = None
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Retrieve child chunks and optionally expand to parent chunks.
@@ -345,9 +451,10 @@ class ParentChildDocumentStore:
         Strategy:
         1. Run hybrid search (BM25 + Semantic) on child chunks
         2. Fuse scores with weighted combination
-        3. If expand_to_parents, get corresponding parent chunks
-        4. Deduplicate parents
-        5. Return both child and parent chunks
+        3. Optionally re-rank with cross-encoder for better precision
+        4. If expand_to_parents, get corresponding parent chunks
+        5. Deduplicate parents
+        6. Return both child and parent chunks
 
         Args:
             query: Query text
@@ -357,25 +464,30 @@ class ParentChildDocumentStore:
             metadata_filter: Optional metadata filter for search
             use_hybrid: Whether to use hybrid (BM25 + semantic) search
             bm25_weight: Weight for BM25 scores (0.0-1.0), semantic gets (1-bm25_weight)
+            use_reranker: Whether to use cross-encoder re-ranking (default: True)
+            hyde_document: Optional HyDE document for semantic search
 
         Returns:
             Tuple of (child_results, parent_results)
         """
-        logger.debug(f"Retrieving for query: {query[:100]}... (hybrid={use_hybrid})")
+        logger.debug(f"Retrieving for query: {query[:100]}... (hybrid={use_hybrid}, reranker={use_reranker})")
 
         if use_hybrid:
             child_chunks = self._hybrid_search(
                 query=query,
                 top_k=top_k,
                 metadata_filter=metadata_filter,
-                bm25_weight=bm25_weight
+                bm25_weight=bm25_weight,
+                use_reranker=use_reranker,
+                hyde_document=hyde_document
             )
         else:
             # Pure semantic search (original method)
             child_chunks = self._semantic_search(
                 query=query,
                 top_k=top_k,
-                metadata_filter=metadata_filter
+                metadata_filter=metadata_filter,
+                hyde_document=hyde_document
             )
 
         logger.info(f"Retrieved {len(child_chunks)} child chunks")
@@ -391,7 +503,8 @@ class ParentChildDocumentStore:
         self,
         query: str,
         top_k: int,
-        metadata_filter: Dict[str, Any] = None
+        metadata_filter: Dict[str, Any] = None,
+        hyde_document: str = None
     ) -> List[Dict[str, Any]]:
         """
         Pure semantic search using embeddings.
@@ -400,6 +513,8 @@ class ParentChildDocumentStore:
             query: Query text
             top_k: Number of results
             metadata_filter: Optional metadata filter
+            hyde_document: Optional HyDE (Hypothetical Document Embedding) text
+                          to use instead of the query for embedding
 
         Returns:
             List of child chunk results
@@ -412,9 +527,15 @@ class ParentChildDocumentStore:
         acronym_time = time.time()
         logger.info(f"[TIMING] Acronym expansion took {acronym_time - start_time:.3f}s")
 
-        # For e5 models, prefix queries with "query: " for best performance
-        # https://huggingface.co/intfloat/e5-large-v2
-        if "e5" in self.embedding_model_name.lower():
+        # Determine what text to embed
+        if hyde_document:
+            # For HyDE, embed the hypothetical document with passage prefix
+            # (since it's document-like, not query-like)
+            query_text = f"passage: {hyde_document}"
+            logger.info(f"[HyDE] Using hypothetical document for embedding ({len(hyde_document)} chars)")
+        elif "e5" in self.embedding_model_name.lower():
+            # For e5 models, prefix queries with "query: " for best performance
+            # https://huggingface.co/intfloat/e5-large-v2
             query_text = f"query: {expanded_query}"
             logger.debug(f"Using e5 query prefix: {query_text}")
         else:
@@ -463,7 +584,9 @@ class ParentChildDocumentStore:
         query: str,
         top_k: int,
         metadata_filter: Dict[str, Any] = None,
-        bm25_weight: float = 0.5
+        bm25_weight: float = 0.5,
+        use_reranker: bool = True,
+        hyde_document: str = None
     ) -> List[Dict[str, Any]]:
         """
         Hybrid search combining semantic (embedding) and BM25 (keyword) search.
@@ -472,6 +595,7 @@ class ParentChildDocumentStore:
         1. Use semantic embeddings as PRIMARY retrieval (finds semantically relevant chunks)
         2. Use BM25 as BOOSTER (boosts chunks with exact keyword matches)
         3. Only apply lenient filtering to remove truly irrelevant results
+        4. Optionally re-rank top candidates with cross-encoder for better precision
 
         This approach leverages the power of embeddings to understand query intent
         while still rewarding exact keyword matches.
@@ -480,19 +604,26 @@ class ParentChildDocumentStore:
             query: Query text
             top_k: Number of results to return
             metadata_filter: Optional metadata filter
-            bm25_weight: Weight for BM25 scores (0.0-1.0)
+            bm25_weight: Weight for BM25 scores (0.0-1.0), None = adaptive
+            use_reranker: Whether to use cross-encoder re-ranking (default: True)
+            hyde_document: Optional HyDE document for semantic search
 
         Returns:
-            List of child chunk results sorted by fused score
+            List of child chunk results sorted by fused score (or rerank score)
         """
-        logger.debug(f"Running semantic-first hybrid search: BM25_weight={bm25_weight}")
+        # Adaptive BM25 weighting if not explicitly specified
+        if bm25_weight is None:
+            _, bm25_weight = self._estimate_query_type(query)
+
+        logger.debug(f"Running semantic-first hybrid search: BM25_weight={bm25_weight}, use_reranker={use_reranker}")
 
         # Step 1: Get semantic search results (SEMANTIC FIRST!)
         # Fetch more results to allow BM25 boosting to rerank them
         semantic_results = self._semantic_search(
             query=query,
             top_k=min(top_k * 5, 100),  # Get 5x results for better fusion, cap at 100
-            metadata_filter=metadata_filter
+            metadata_filter=metadata_filter,
+            hyde_document=hyde_document
         )
 
         if not semantic_results:
@@ -609,6 +740,18 @@ class ParentChildDocumentStore:
                 f"Rank {i}: {doc_title} - {section} "
                 f"(semantic={result['semantic_score']:.3f}, BM25={result['bm25_score']:.3f}, fused={result['score']:.3f})"
             )
+
+        # Step 6: Optional cross-encoder re-ranking for improved precision
+        if use_reranker and len(top_results) > 1:
+            # Re-rank top candidates with cross-encoder
+            # Get more candidates than needed, then re-rank to top_k
+            candidates_for_rerank = top_results[:min(30, len(top_results))]
+            top_results = self.rerank_with_cross_encoder(
+                query=query,
+                results=candidates_for_rerank,
+                top_k=top_k
+            )
+            logger.info(f"[RERANKER] Final top result after re-ranking: {top_results[0]['metadata'].get('section_title', 'Unknown')[:50]}")
 
         return top_results
 

@@ -159,6 +159,111 @@ class AdvancedRAGPipeline:
         logger.info("Advanced RAG Pipeline initialized successfully!")
         logger.info(f"Document store stats: {self.document_store.get_statistics()}")
 
+    async def rewrite_query_for_retrieval(self, user_query: str) -> str:
+        """
+        Use LLM to clean up and expand messy queries for better retrieval.
+
+        This helps with:
+        - Typos and grammar issues
+        - Incomplete questions
+        - Missing context
+        - Acronym expansion
+
+        Args:
+            user_query: Original user query (potentially messy)
+
+        Returns:
+            Cleaned and expanded query for retrieval
+        """
+        # Skip rewriting for very short or very clean queries
+        if len(user_query.split()) <= 3 and user_query.endswith('?'):
+            logger.info(f"[QUERY REWRITE] Skipping - query already clean: {user_query}")
+            return user_query
+
+        prompt = f"""Rewrite this search query to be clearer and more complete for searching corporate policy documents.
+
+Original query: {user_query}
+
+Rules:
+1. Fix any spelling or grammar errors
+2. Expand common abbreviations (PTO = Paid Time Off, HR = Human Resources, etc.)
+3. Make it a complete question if it's a fragment
+4. Add 2-3 relevant synonyms in parentheses for key terms
+5. Keep it concise - one clear sentence
+6. Preserve the original intent exactly
+7. Output ONLY the rewritten query, nothing else
+
+Rewritten query:"""
+
+        try:
+            response = self.ollama_client.generate(
+                model=LLM_MODEL,
+                prompt=prompt,
+                options={
+                    "temperature": 0.3,  # Low temp for consistent rewrites
+                    "num_predict": 100
+                },
+                keep_alive="10m"
+            )
+
+            rewritten = response['response'].strip()
+
+            # Clean up any quotes or extra formatting
+            rewritten = rewritten.strip('"').strip("'").strip()
+
+            # Sanity check - if rewrite is way longer or seems wrong, use original
+            if len(rewritten) > len(user_query) * 3 or len(rewritten) < 5:
+                logger.warning(f"[QUERY REWRITE] Suspicious rewrite, using original. Rewrite was: {rewritten}")
+                return user_query
+
+            logger.info(f"[QUERY REWRITE] '{user_query}' -> '{rewritten}'")
+            return rewritten
+
+        except Exception as e:
+            logger.error(f"[QUERY REWRITE] Failed: {e}, using original query")
+            return user_query
+
+    async def generate_hypothetical_document(self, query: str) -> str:
+        """
+        Generate a hypothetical document/answer for HyDE retrieval.
+
+        HyDE (Hypothetical Document Embedding) generates a fake answer,
+        then embeds that instead of the query. This often retrieves
+        better results because the embedding is more similar to actual
+        document content.
+
+        Args:
+            query: User's question
+
+        Returns:
+            Hypothetical document text to embed
+        """
+        prompt = f"""You are a corporate policy document. Write a brief, factual paragraph that would answer this question.
+Write as if you are quoting directly from an official policy document.
+
+Question: {query}
+
+Policy document excerpt (2-3 sentences, formal tone, include specific details):"""
+
+        try:
+            response = self.ollama_client.generate(
+                model=LLM_MODEL,
+                prompt=prompt,
+                options={
+                    "temperature": 0.5,
+                    "num_predict": 150
+                },
+                keep_alive="10m"
+            )
+
+            hyde_doc = response['response'].strip()
+            logger.info(f"[HyDE] Generated hypothetical document ({len(hyde_doc)} chars): {hyde_doc[:100]}...")
+            return hyde_doc
+
+        except Exception as e:
+            logger.error(f"[HyDE] Failed to generate hypothetical document: {e}")
+            return query  # Fallback to original query
+
     async def ingest_document(
         self,
         file_path: str,
@@ -307,16 +412,22 @@ class AdvancedRAGPipeline:
         metadata_filter: Dict[str, Any] = None,
         temperature: float = 0.3,
         use_hybrid: bool = True,
-        bm25_weight: float = 0.5
+        bm25_weight: float = None,
+        rewrite_query: bool = False,
+        use_reranker: bool = True,
+        use_hyde: bool = False
     ) -> Dict[str, Any]:
         """
         Query the RAG system with parent-child retrieval.
 
         Process:
-        1. Retrieve top_k child chunks (hybrid: BM25 + semantic)
-        2. Expand to parent chunks (context)
-        3. Pass parent chunks to LLM
-        4. Generate answer with citations
+        1. Optionally rewrite messy queries for better retrieval
+        2. Optionally generate HyDE document for semantic search
+        3. Retrieve top_k child chunks (hybrid: BM25 + semantic)
+        4. Optionally re-rank with cross-encoder
+        5. Expand to parent chunks (context)
+        6. Pass parent chunks to LLM
+        7. Generate answer with citations
 
         Args:
             question: User's question
@@ -325,22 +436,37 @@ class AdvancedRAGPipeline:
             metadata_filter: Optional metadata filter
             temperature: LLM temperature
             use_hybrid: Use hybrid search (BM25 + semantic)
-            bm25_weight: Weight for BM25 scores (0.0-1.0)
+            bm25_weight: Weight for BM25 scores (0.0-1.0), None = adaptive
+            rewrite_query: Whether to use LLM to clean up messy queries (default: False)
+            use_reranker: Whether to use cross-encoder re-ranking (default: True)
+            use_hyde: Whether to use HyDE for semantic search (default: False)
 
         Returns:
             Dict with answer and citations
         """
-        logger.info(f"Processing query: {question} (hybrid={use_hybrid}, bm25_weight={bm25_weight})")
+        logger.info(f"Processing query: {question} (hybrid={use_hybrid}, bm25_weight={bm25_weight}, rewrite={rewrite_query}, reranker={use_reranker}, hyde={use_hyde})")
 
         try:
+            # Step 0a: Optional query rewriting for messy queries
+            retrieval_query = question
+            if rewrite_query:
+                retrieval_query = await self.rewrite_query_for_retrieval(question)
+
+            # Step 0b: Optional HyDE document generation
+            hyde_document = None
+            if use_hyde:
+                hyde_document = await self.generate_hypothetical_document(question)
+
             # Step 1: Use hybrid search to get top 30 candidates (casts wide net)
             child_results, _ = self.document_store.retrieve_with_parent_expansion(
-                query=question,
+                query=retrieval_query,
                 top_k=30,  # Get more candidates for reranking
                 expand_to_parents=False,  # Don't expand yet - we'll rerank first
                 metadata_filter=metadata_filter,
                 use_hybrid=use_hybrid,
-                bm25_weight=bm25_weight
+                bm25_weight=bm25_weight,
+                use_reranker=use_reranker,
+                hyde_document=hyde_document
             )
 
             # Check if we have insufficient results
@@ -525,8 +651,11 @@ class AdvancedRAGPipeline:
         metadata_filter: Dict[str, Any] = None,
         temperature: float = 0.3,
         use_hybrid: bool = True,
-        bm25_weight: float = 0.2,
-        include_followups: bool = True
+        bm25_weight: float = None,
+        include_followups: bool = True,
+        rewrite_query: bool = False,
+        use_reranker: bool = True,
+        use_hyde: bool = False
     ) -> AsyncGenerator[str, None]:
         """
         Stream query response with real-time status updates and token-by-token LLM generation.
@@ -539,7 +668,10 @@ class AdvancedRAGPipeline:
         - error: Error message if something fails
 
         Args:
-            Same as query() method
+            Same as query() method plus:
+            rewrite_query: Whether to use LLM to clean up messy queries (default: False)
+            use_reranker: Whether to use cross-encoder re-ranking (default: True)
+            use_hyde: Whether to use HyDE for semantic search (default: False)
 
         Yields:
             SSE-formatted JSON messages
@@ -547,22 +679,38 @@ class AdvancedRAGPipeline:
         try:
             import time
             stream_start_time = time.time()
-            logger.info(f"[STREAM START] Processing streaming query: {question[:100]}...")
+            logger.info(f"[STREAM START] Processing streaming query: {question[:100]}... (rewrite={rewrite_query}, reranker={use_reranker}, hyde={use_hyde})")
 
             # Yield initial status - CRITICAL: await asyncio.sleep(0) after EVERY yield to flush
             yield f"data: {json.dumps({'type': 'status', 'message': 'Finding relevant documents...'})}\n\n"
             await asyncio.sleep(0)  # Force async event loop to flush to client
 
+            # Step 0a: Optional query rewriting for messy queries
+            retrieval_query = question
+            if rewrite_query:
+                yield f"data: {json.dumps({'type': 'status', 'message': 'Improving query clarity...'})}\n\n"
+                await asyncio.sleep(0)
+                retrieval_query = await self.rewrite_query_for_retrieval(question)
+
+            # Step 0b: Optional HyDE document generation
+            hyde_document = None
+            if use_hyde:
+                yield f"data: {json.dumps({'type': 'status', 'message': 'Generating hypothetical answer for better search...'})}\n\n"
+                await asyncio.sleep(0)
+                hyde_document = await self.generate_hypothetical_document(question)
+
             # Step 1: Use hybrid search to get top 30 candidates (casts wide net)
             retrieval_start = time.time()
             logger.info(f"[TIMING] Starting document retrieval...")
             child_results, _ = self.document_store.retrieve_with_parent_expansion(
-                query=question,
+                query=retrieval_query,
                 top_k=30,  # Get more candidates for reranking
                 expand_to_parents=False,  # Don't expand yet - we'll rerank first
                 metadata_filter=metadata_filter,
                 use_hybrid=use_hybrid,
-                bm25_weight=bm25_weight
+                bm25_weight=bm25_weight,
+                use_reranker=use_reranker,
+                hyde_document=hyde_document
             )
             retrieval_end = time.time()
             logger.info(f"[TIMING] ⚠️  DOCUMENT RETRIEVAL took {retrieval_end - retrieval_start:.3f}s")
@@ -1363,9 +1511,12 @@ class QueryRequest(BaseModel):
     temperature: float = 0.3  # LLM temperature for answer generation
     metadata_filter: Optional[Dict[str, Any]] = None
     use_hybrid: bool = True  # Use hybrid search (BM25 + semantic) by default
-    bm25_weight: float = 0.2  # Weight for BM25 (0.2 = 80% semantic, 20% BM25)
+    bm25_weight: Optional[float] = None  # Weight for BM25, None = adaptive weighting
     use_llm_selection: bool = False  # DEPRECATED: Use semantic reranking instead
     include_followups: bool = True  # Generate follow-up questions inline (faster, no extra LLM call)
+    rewrite_query: bool = False  # NEW - opt-in query rewriting for messy queries
+    use_reranker: bool = True  # NEW - cross-encoder re-ranking (default on)
+    use_hyde: bool = False  # NEW - Hypothetical Document Embedding (default off)
 
 
 class QueryResponse(BaseModel):
@@ -1434,8 +1585,11 @@ async def query(request: QueryRequest):
     - top_k: Candidates for reranking (default: 30, don't change)
     - parent_limit: Max parents after reranking (default: 5)
     - use_hybrid: Enable hybrid search (default: True)
-    - bm25_weight: BM25 weight in Stage 1 (default: 0.2)
+    - bm25_weight: BM25 weight in Stage 1 (default: None = adaptive)
     - temperature: LLM temperature (default: 0.3)
+    - rewrite_query: Clean up messy queries with LLM (default: False)
+    - use_reranker: Use cross-encoder re-ranking (default: True)
+    - use_hyde: Use HyDE for semantic search (default: False)
     """
     try:
         # Route to appropriate query method based on use_llm_selection
@@ -1443,7 +1597,7 @@ async def query(request: QueryRequest):
             logger.info("Using LLM-based document selection mode")
             result = await rag_pipeline.query_with_llm_selection(
                 question=request.prompt,
-                max_documents=request.max_documents,
+                max_documents=request.parent_limit,  # Use parent_limit as max_documents
                 temperature=request.temperature
             )
         else:
@@ -1455,7 +1609,10 @@ async def query(request: QueryRequest):
                 metadata_filter=request.metadata_filter,
                 temperature=request.temperature,
                 use_hybrid=request.use_hybrid,
-                bm25_weight=request.bm25_weight
+                bm25_weight=request.bm25_weight,
+                rewrite_query=request.rewrite_query,
+                use_reranker=request.use_reranker,
+                use_hyde=request.use_hyde
             )
 
         # Conditionally generate follow-up question suggestions
@@ -1528,7 +1685,7 @@ async def query_stream_endpoint(request: QueryRequest):
     """
     try:
         logger.info(f"[ENDPOINT CALLED] /query-stream endpoint invoked for query: {request.prompt[:100]}")
-        logger.info(f"[DEBUG] include_followups parameter value: {request.include_followups} (type: {type(request.include_followups).__name__})")
+        logger.info(f"[DEBUG] include_followups={request.include_followups}, rewrite_query={request.rewrite_query}, use_reranker={request.use_reranker}, use_hyde={request.use_hyde}")
 
         # Generate streaming response
         return StreamingResponse(
@@ -1540,7 +1697,10 @@ async def query_stream_endpoint(request: QueryRequest):
                 temperature=request.temperature,
                 use_hybrid=request.use_hybrid,
                 bm25_weight=request.bm25_weight,
-                include_followups=request.include_followups
+                include_followups=request.include_followups,
+                rewrite_query=request.rewrite_query,
+                use_reranker=request.use_reranker,
+                use_hyde=request.use_hyde
             ),
             media_type="text/event-stream",
             headers={

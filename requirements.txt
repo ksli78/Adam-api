@@ -15,16 +15,18 @@ python-multipart
 
 docling>=2.8,<3
 
-sentence-transformers==3.2.0
-transformers==4.48.1
+# Sentence Transformers (includes CrossEncoder support for re-ranking)
+# CrossEncoder uses the same library, model: cross-encoder/ms-marco-MiniLM-L-12-v2
+sentence-transformers>=3.2.0
+transformers>=4.48.1
 tokenizers
-huggingface_hub==0.25.2
-safetensors==0.4.5
-accelerate==0.34.2
+huggingface_hub>=0.25.2
+safetensors>=0.4.5
+accelerate>=0.34.2
 
 chromadb>=0.4.0
 rank_bm25==0.2.2
-rapidfuzz==3.9.2
+rapidfuzz>=3.9.2
 
 ollama>=0.1.0
 
@@ -33,3 +35,7 @@ regex>=2023.0.0
 
 pyyaml>=6.0
 pyodbc>=4.0.39
+
+# Note: CrossEncoder is included in sentence-transformers
+# The model cross-encoder/ms-marco-MiniLM-L-12-v2 will be
+# downloaded automatically on first use (~120MB)
