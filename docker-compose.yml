@@ -2,8 +2,8 @@ version: '3.8'
 
 # Adam API Docker Compose
 # ========================
-# This compose file runs the Adam RAG API connecting to external Ollama servers.
-# Ollama is running on the remote server with SSL on ports 11433 and 11436.
+# This compose file runs the Adam RAG API connecting to Ollama on the host.
+# Uses network_mode: host for direct access to host services.
 #
 # Usage:
 #   # Build and start:
@@ -24,25 +24,21 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: adam-api
-    ports:
-      - "8000:8000"
+
+    # Use host network - container can access localhost directly
+    network_mode: host
 
     environment:
       - DATA_DIR=/data/airgapped_rag
-      # Ollama servers via host's internal ports (bypasses SSL reverse proxy)
-      # host.docker.internal resolves to the Docker host from inside containers
-      - OLLAMA_HOSTS=http://host.docker.internal:21433,http://host.docker.internal:21436
+      # Ollama servers on host's internal ports
+      - OLLAMA_HOSTS=http://localhost:21433,http://localhost:21436
       # LLM model configuration
       - LLM_MODEL=mistral:latest
       - LLM_CONTEXT_WINDOW=32768
       # SQL Server authentication (set in .env file or environment)
       - EMPLOYEE_DB_PASSWORD=${EMPLOYEE_DB_PASSWORD:-}
 
-    # Allow container to reach host services
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-
-    # GPU access for embeddings (uses both GPUs)
+    # GPU access for embeddings
     deploy:
       resources:
         reservations:
@@ -54,9 +50,6 @@ services:
     volumes:
       - adam-data:/data/airgapped_rag
 
-    networks:
-      - adam-network
-
     restart: unless-stopped
 
     healthcheck:
@@ -64,11 +57,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 120s  # Allow time for model warmup
-
-networks:
-  adam-network:
-    driver: bridge
+      start_period: 120s
 
 volumes:
   adam-data:
@@ -77,26 +66,25 @@ volumes:
 # DEPLOYMENT NOTES
 # ================
 #
+# Network Mode: host
+#   - Container shares the host's network namespace
+#   - Can access localhost:21433 and localhost:21436 directly
+#   - API available at http://localhost:8000 (no port mapping needed)
+#
 # Prerequisites:
-#   1. Ollama is running on the host at internal ports:
+#   1. Ollama is running on the host at:
 #      - http://localhost:21433 (GPU 0)
 #      - http://localhost:21436 (GPU 1)
 #   2. The mistral:latest model is installed on both Ollama instances
 #
-# Network Configuration:
-#   - Container uses host.docker.internal to reach host services
-#   - This bypasses the SSL reverse proxy for internal communication
-#   - External clients can still use https://adam.amentumspacemissions.com:11433
-#
 # Optional: SQL Server Integration
-#   Set EMPLOYEE_DB_PASSWORD environment variable before running:
 #   export EMPLOYEE_DB_PASSWORD=your_password
 #   docker compose up -d --build
 #
 # Troubleshooting:
 #   - Check API health: curl http://localhost:8000/health
 #   - View logs: docker logs -f adam-api
-#   - Test Ollama from host: curl http://localhost:21433/api/tags
+#   - Test Ollama: curl http://localhost:21433/api/tags
 #
 # API Endpoints:
 #   - Health: http://localhost:8000/health
