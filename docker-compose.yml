@@ -29,13 +29,18 @@ services:
 
     environment:
       - DATA_DIR=/data/airgapped_rag
-      # Remote Ollama servers with SSL (load balanced)
-      - OLLAMA_HOSTS=https://adam.amentumspacemissions.com:11433,https://adam.amentumspacemissions.com:11436
+      # Ollama servers via host's internal ports (bypasses SSL reverse proxy)
+      # host.docker.internal resolves to the Docker host from inside containers
+      - OLLAMA_HOSTS=http://host.docker.internal:21433,http://host.docker.internal:21436
       # LLM model configuration
       - LLM_MODEL=mistral:latest
       - LLM_CONTEXT_WINDOW=32768
       # SQL Server authentication (set in .env file or environment)
       - EMPLOYEE_DB_PASSWORD=${EMPLOYEE_DB_PASSWORD:-}
+
+    # Allow container to reach host services
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
     # GPU access for embeddings (uses both GPUs)
     deploy:
@@ -73,10 +78,15 @@ volumes:
 # ================
 #
 # Prerequisites:
-#   1. Ollama is running on remote server at:
-#      - https://adam.amentumspacemissions.com:11433 (GPU 0)
-#      - https://adam.amentumspacemissions.com:11436 (GPU 1)
+#   1. Ollama is running on the host at internal ports:
+#      - http://localhost:21433 (GPU 0)
+#      - http://localhost:21436 (GPU 1)
 #   2. The mistral:latest model is installed on both Ollama instances
+#
+# Network Configuration:
+#   - Container uses host.docker.internal to reach host services
+#   - This bypasses the SSL reverse proxy for internal communication
+#   - External clients can still use https://adam.amentumspacemissions.com:11433
 #
 # Optional: SQL Server Integration
 #   Set EMPLOYEE_DB_PASSWORD environment variable before running:
@@ -86,7 +96,7 @@ volumes:
 # Troubleshooting:
 #   - Check API health: curl http://localhost:8000/health
 #   - View logs: docker logs -f adam-api
-#   - Test Ollama connectivity: curl https://adam.amentumspacemissions.com:11433/api/tags
+#   - Test Ollama from host: curl http://localhost:21433/api/tags
 #
 # API Endpoints:
 #   - Health: http://localhost:8000/health
