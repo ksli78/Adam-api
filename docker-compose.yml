@@ -37,6 +37,15 @@ services:
       # SQL Server authentication (set in .env file or environment)
       - EMPLOYEE_DB_PASSWORD=${EMPLOYEE_DB_PASSWORD:-}
 
+    # GPU access for embeddings (uses both GPUs)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
     volumes:
       - adam-data:/data/airgapped_rag
 
