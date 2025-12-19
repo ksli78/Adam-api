@@ -140,7 +140,7 @@ class AdvancedRAGPipeline:
                     prompt="Hello",
                     options={"temperature": 0.1, "num_predict": 5},
                     stream=False,
-                    keep_alive="10m"  # Keep loaded for 10 minutes
+                    keep_alive=-1  # Keep loaded forever (never unload)
                 )
                 warmed_instances += 1
                 logger.info(f"  ✅ Instance {i+1} ready: {host}")
