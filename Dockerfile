@@ -48,7 +48,7 @@ RUN mkdir -p /data/airgapped_rag/documents /data/airgapped_rag/chromadb_advanced
 
 # Environment variables (can be overridden)
 ENV DATA_DIR=/data/airgapped_rag
-ENV OLLAMA_HOST=http://ollama:11434
+ENV OLLAMA_HOSTS=https://adam.amentumspacemissions.com:11433,https://adam.amentumspacemissions.com:11436
 ENV LLM_MODEL=llama3:8b
 ENV PYTHONUNBUFFERED=1
 

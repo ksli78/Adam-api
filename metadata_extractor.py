@@ -82,7 +82,7 @@ class MetadataExtractor:
             context_window: LLM context window size in tokens
         """
         self.model_name = model_name
-        self.ollama_hosts = ollama_hosts or ["http://adam.amentumspacemissions.com:11434"]
+        self.ollama_hosts = ollama_hosts or ["https://adam.amentumspacemissions.com:11433", "https://adam.amentumspacemissions.com:11436"]
         self.max_input_chars = max_input_chars
         self.temperature = temperature
         self.context_window = context_window

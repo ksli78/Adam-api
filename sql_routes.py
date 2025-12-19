@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data/airgapped_rag"))
-OLLAMA_HOSTS = os.getenv("OLLAMA_HOSTS", "http://localhost:11434").split(",")
+OLLAMA_HOSTS = os.getenv("OLLAMA_HOSTS", "https://adam.amentumspacemissions.com:11433,https://adam.amentumspacemissions.com:11436").split(",")
 LLM_MODEL = os.getenv("LLM_MODEL", "mistral")
 
 # Create router

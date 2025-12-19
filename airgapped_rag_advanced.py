@@ -64,7 +64,7 @@ CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 # Ollama configuration
 # Dual Ollama servers on development/production machine with 32GB VRAM (2 GPUs)
 # Load balanced across both GPUs for 2x throughput
-OLLAMA_HOSTS = os.getenv("OLLAMA_HOSTS", "http://adam.amentumspacemissions.com:11434").split(",")
+OLLAMA_HOSTS = os.getenv("OLLAMA_HOSTS", "https://adam.amentumspacemissions.com:11433,https://adam.amentumspacemissions.com:11436").split(",")
 LLM_MODEL = os.getenv("LLM_MODEL", "mistral")  # Mistral 7B - fast and efficient for RAG (~4GB VRAM per GPU)
 
 # LLM Context window configuration
