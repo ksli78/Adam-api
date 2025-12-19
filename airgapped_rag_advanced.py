@@ -448,9 +448,9 @@ class AdvancedRAGPipeline:
             # Build context from parent chunks (include URLs for inline citations)
             context_parts = []
             for i, parent in enumerate(parent_results, 1):
+                doc_title = parent['metadata'].get('document_title', 'Unknown')
                 context_parts.append(
-                    f"[Document {i}]\n"
-                    f"Title: {parent['metadata'].get('document_title', 'Unknown')}\n"
+                    f"[{doc_title}]\n"
                     f"URL: {parent['metadata'].get('source_url', '')}\n"
                     f"Section: {parent['metadata'].get('section_title', 'Unknown')}\n"
                     f"Content:\n{parent['text']}\n"
@@ -633,9 +633,9 @@ class AdvancedRAGPipeline:
             # Build context from parent chunks (MUST include URLs for inline citations!)
             context_parts = []
             for i, parent in enumerate(parent_results, 1):
+                doc_title = parent['metadata'].get('document_title', 'Unknown')
                 context_parts.append(
-                    f"[Document {i}]\n"
-                    f"Title: {parent['metadata'].get('document_title', 'Unknown')}\n"
+                    f"[{doc_title}]\n"
                     f"URL: {parent['metadata'].get('source_url', '')}\n"
                     f"Section: {parent['metadata'].get('section_title', 'Unknown')}\n"
                     f"Content:\n{parent['text']}\n"
@@ -687,7 +687,9 @@ INSTRUCTIONS:
 - Provide a direct, helpful answer to the question
 - Use information ONLY from the documents above - do not add information from outside knowledge
 - Include specific details (section numbers, dates, amounts) when relevant
-- IMPORTANT: Add inline citations after EACH claim or bullet point using this format: (<span><a href="URL">FileName.pdf</a></span>)
+- IMPORTANT: Add inline citations after EACH claim or bullet point using the actual document filename
+- Citation format: (<span><a href="URL">FileName.pdf</a></span>)
+- NEVER use generic labels like "Document 1" or "Document 2" - always use the actual filename (e.g., EN-PO-0301.pdf)
 - Place citations immediately after the relevant statement, before the period
 - If information is missing, clearly state what cannot be answered{followup_instruction}
 
@@ -1024,9 +1026,9 @@ Now generate follow-up questions:"""
             # Step 3: Build context from full documents
             context_parts = []
             for i, doc in enumerate(documents_with_text, 1):
+                doc_title = doc['metadata']['document_title']
                 context_parts.append(
-                    f"[Document {i}]\n"
-                    f"Title: {doc['metadata']['document_title']}\n"
+                    f"[{doc_title}]\n"
                     f"URL: {doc['metadata']['source_url']}\n"
                     f"Type: {doc['metadata']['document_type']}\n"
                     f"Summary: {doc['metadata']['summary']}\n\n"
