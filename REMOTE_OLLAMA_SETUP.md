@@ -7,7 +7,9 @@ This guide explains how to set up the remote Ollama server on your development/p
 **Hardware:**
 - 2 GPUs (bridged)
 - 32 GB VRAM total
-- URL: `http://adam.amentumspacemissions.com:11434`
+- URLs (SSL):
+  - `https://adam.amentumspacemissions.com:11433` (GPU 0)
+  - `https://adam.amentumspacemissions.com:11436` (GPU 1)
 
 **Capabilities:**
 - ✅ Can run llama3.1:70b (best quality)
@@ -147,7 +149,9 @@ netstat -tulpn | grep 11434
 From your **application server**:
 
 ```bash
-curl http://adam.amentumspacemissions.com:11434/api/tags
+# Test both Ollama instances (SSL)
+curl https://adam.amentumspacemissions.com:11433/api/tags
+curl https://adam.amentumspacemissions.com:11436/api/tags
 
 # Should return JSON with available models
 ```
@@ -160,9 +164,9 @@ Your application is already configured to use the remote Ollama server:
 
 **airgapped_rag_advanced.py:**
 ```python
-OLLAMA_HOST = "http://adam.amentumspacemissions.com:11434"
-LLM_MODEL = "llama3.1:70b"
-LLM_CONTEXT_WINDOW = 65536  # 64K tokens
+OLLAMA_HOSTS = "https://adam.amentumspacemissions.com:11433,https://adam.amentumspacemissions.com:11436"
+LLM_MODEL = "mistral:latest"
+LLM_CONTEXT_WINDOW = 32768  # 32K tokens
 ```
 
 **No changes needed** - just pull the code and restart!
@@ -180,8 +184,8 @@ export LLM_MODEL="llama3.1:70b-q3"
 # Use different context size
 export LLM_CONTEXT_WINDOW="131072"  # 128K (max)
 
-# Use different Ollama server
-export OLLAMA_HOST="http://different-server:11434"
+# Use different Ollama servers (comma-separated for load balancing)
+export OLLAMA_HOSTS="https://server1:11433,https://server2:11436"
 ```
 
 ---
@@ -347,9 +351,9 @@ export LLM_MODEL="qwen2.5:32b"
 
 From your application server:
 ```bash
-curl http://adam.amentumspacemissions.com:11434/api/generate \
+curl https://adam.amentumspacemissions.com:11433/api/generate \
   -d '{
-    "model": "llama3.1:70b",
+    "model": "mistral:latest",
     "prompt": "What is 2+2?",
     "stream": false
   }'
@@ -369,7 +373,7 @@ curl -X POST http://localhost:8000/query \
 
 **Look for in logs:**
 ```
-MetadataExtractor initialized: model=llama3.1:70b, host=http://adam.amentumspacemissions.com:11434
+MetadataExtractor initialized: model=mistral:latest, hosts=['https://adam.amentumspacemissions.com:11433', 'https://adam.amentumspacemissions.com:11436']
 Stage 2 complete: LLM selected 2 final documents:
   - EN-PO-0301.pdf (type: policy)
 ```

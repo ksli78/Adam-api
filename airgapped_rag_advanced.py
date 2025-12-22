@@ -64,7 +64,7 @@ CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 # Ollama configuration
 # Dual Ollama servers on development/production machine with 32GB VRAM (2 GPUs)
 # Load balanced across both GPUs for 2x throughput
-OLLAMA_HOSTS = os.getenv("OLLAMA_HOSTS", "http://adam.amentumspacemissions.com:11434").split(",")
+OLLAMA_HOSTS = os.getenv("OLLAMA_HOSTS", "https://adam.amentumspacemissions.com:11433,https://adam.amentumspacemissions.com:11436").split(",")
 LLM_MODEL = os.getenv("LLM_MODEL", "mistral")  # Mistral 7B - fast and efficient for RAG (~4GB VRAM per GPU)
 
 # LLM Context window configuration
@@ -140,7 +140,7 @@ class AdvancedRAGPipeline:
                     prompt="Hello",
                     options={"temperature": 0.1, "num_predict": 5},
                     stream=False,
-                    keep_alive="10m"  # Keep loaded for 10 minutes
+                    keep_alive=-1  # Keep loaded forever (never unload)
                 )
                 warmed_instances += 1
                 logger.info(f"  ✅ Instance {i+1} ready: {host}")
@@ -448,9 +448,9 @@ class AdvancedRAGPipeline:
             # Build context from parent chunks (include URLs for inline citations)
             context_parts = []
             for i, parent in enumerate(parent_results, 1):
+                doc_title = parent['metadata'].get('document_title', 'Unknown')
                 context_parts.append(
-                    f"[Document {i}]\n"
-                    f"Title: {parent['metadata'].get('document_title', 'Unknown')}\n"
+                    f"[{doc_title}]\n"
                     f"URL: {parent['metadata'].get('source_url', '')}\n"
                     f"Section: {parent['metadata'].get('section_title', 'Unknown')}\n"
                     f"Content:\n{parent['text']}\n"
@@ -479,8 +479,9 @@ class AdvancedRAGPipeline:
             # Citations are in format: (<span><a href="URL">FileName.pdf</a></span>)
             import re
             cited_filenames = set()
-            citation_pattern = r'<a href="[^"]*">([^<]+\.pdf)</a>'
-            matches = re.findall(citation_pattern, answer)
+            # Pattern to extract filenames from inline citations like (EN-PO-0301.pdf)
+            citation_pattern = r'\(([^)]+\.pdf)\)'
+            matches = re.findall(citation_pattern, answer, re.IGNORECASE)
             for filename in matches:
                 cited_filenames.add(filename)
 
@@ -633,9 +634,9 @@ class AdvancedRAGPipeline:
             # Build context from parent chunks (MUST include URLs for inline citations!)
             context_parts = []
             for i, parent in enumerate(parent_results, 1):
+                doc_title = parent['metadata'].get('document_title', 'Unknown')
                 context_parts.append(
-                    f"[Document {i}]\n"
-                    f"Title: {parent['metadata'].get('document_title', 'Unknown')}\n"
+                    f"[{doc_title}]\n"
                     f"URL: {parent['metadata'].get('source_url', '')}\n"
                     f"Section: {parent['metadata'].get('section_title', 'Unknown')}\n"
                     f"Content:\n{parent['text']}\n"
@@ -687,15 +688,12 @@ INSTRUCTIONS:
 - Provide a direct, helpful answer to the question
 - Use information ONLY from the documents above - do not add information from outside knowledge
 - Include specific details (section numbers, dates, amounts) when relevant
-- IMPORTANT: Add inline citations after EACH claim or bullet point using this format: (<span><a href="URL">FileName.pdf</a></span>)
-- Place citations immediately after the relevant statement, before the period
+- Add inline citations after EACH claim using the document filename in parentheses
+- Citation format: (DocumentName.pdf) - example: (EN-PO-0301.pdf)
+- Place citations immediately after the relevant statement
 - If information is missing, clearly state what cannot be answered{followup_instruction}
 
-CITATION EXAMPLE:
-✓ CORRECT: "Employees must submit requests via the Decisions tool (<span><a href="https://...">EN-PO-0301.pdf</a></span>)."
-✗ WRONG: "Employees must submit requests via the Decisions tool. For more details, see EN-PO-0301.pdf."
-
-Now provide your answer with inline citations after each point:"""
+Now provide your answer with inline citations:"""
 
             logger.info("Starting LLM streaming generation...")
             logger.info(f"[TIMING] Prompt size: {len(prompt)} characters (~{len(prompt.split())} words)")
@@ -758,12 +756,12 @@ Now provide your answer with inline citations after each point:"""
             logger.info(f"[TIMING] Expected: 30-50+ tokens/sec on GPU, <10 tokens/sec on CPU")
 
             # Extract which documents were actually cited in the answer
-            # Citations are in format: (<span><a href="URL">FileName.pdf</a></span>)
+            # Citations are now in simple format: (FileName.pdf)
             import re
             cited_filenames = set()
-            # Pattern to extract filenames from inline citations
-            citation_pattern = r'<a href="[^"]*">([^<]+\.pdf)</a>'
-            matches = re.findall(citation_pattern, full_answer)
+            # Pattern to extract filenames from inline citations like (EN-PO-0301.pdf)
+            citation_pattern = r'\(([^)]+\.pdf)\)'
+            matches = re.findall(citation_pattern, full_answer, re.IGNORECASE)
             for filename in matches:
                 cited_filenames.add(filename)
 
@@ -1024,9 +1022,9 @@ Now generate follow-up questions:"""
             # Step 3: Build context from full documents
             context_parts = []
             for i, doc in enumerate(documents_with_text, 1):
+                doc_title = doc['metadata']['document_title']
                 context_parts.append(
-                    f"[Document {i}]\n"
-                    f"Title: {doc['metadata']['document_title']}\n"
+                    f"[{doc_title}]\n"
                     f"URL: {doc['metadata']['source_url']}\n"
                     f"Type: {doc['metadata']['document_type']}\n"
                     f"Summary: {doc['metadata']['summary']}\n\n"
@@ -1054,8 +1052,9 @@ Now generate follow-up questions:"""
             # Extract which documents were actually cited in the answer
             import re
             cited_filenames = set()
-            citation_pattern = r'<a href="[^"]*">([^<]+\.pdf)</a>'
-            matches = re.findall(citation_pattern, answer)
+            # Pattern to extract filenames from inline citations like (EN-PO-0301.pdf)
+            citation_pattern = r'\(([^)]+\.pdf)\)'
+            matches = re.findall(citation_pattern, answer, re.IGNORECASE)
             for filename in matches:
                 cited_filenames.add(filename)
 

@@ -82,8 +82,8 @@ services:
 
     environment:
       - DATA_DIR=/data/airgapped_rag
-      # Multiple Ollama hosts for load balancing (remote server)
-      - OLLAMA_HOSTS=http://adam.amentumspacemissions.com:11434,http://adam.amentumspacemissions.com:11435
+      # Multiple Ollama hosts for load balancing (remote server with SSL)
+      - OLLAMA_HOSTS=https://adam.amentumspacemissions.com:11433,https://adam.amentumspacemissions.com:11436
       # Use mistral:latest 7B (Q4_K_M quantization) - faster and less memory
       - LLM_MODEL=mistral:latest
       - LLM_CONTEXT_WINDOW=32768
