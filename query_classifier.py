@@ -124,6 +124,106 @@ def is_off_topic(text: str) -> bool:
     return False
 
 
+# Common Lorem Ipsum and placeholder text indicators
+LOREM_IPSUM_INDICATORS = [
+    'lorem', 'ipsum', 'dolor', 'sit amet', 'consectetur', 'adipiscing',
+    'elit', 'sed do', 'eiusmod', 'tempor', 'incididunt', 'labore',
+    'dolore', 'magna', 'aliqua', 'enim', 'minim', 'veniam', 'quis',
+    'nostrud', 'exercitation', 'ullamco', 'laboris', 'nisi', 'aliquip',
+    'commodo', 'consequat', 'duis', 'aute', 'irure', 'reprehenderit',
+    'voluptate', 'velit', 'esse', 'cillum', 'fugiat', 'nulla', 'pariatur',
+    'excepteur', 'sint', 'occaecat', 'cupidatat', 'proident', 'sunt',
+    'culpa', 'officia', 'deserunt', 'mollit', 'anim', 'laborum'
+]
+
+
+def is_placeholder_text(text: str) -> bool:
+    """
+    Detect Lorem Ipsum and other placeholder/dummy text.
+
+    Args:
+        text: User input text
+
+    Returns:
+        True if the text appears to be placeholder text like Lorem Ipsum
+    """
+    text_lower = text.strip().lower()
+
+    # Check for Lorem Ipsum indicators
+    lorem_hits = sum(1 for indicator in LOREM_IPSUM_INDICATORS if indicator in text_lower)
+
+    # If we find 3+ Lorem Ipsum words, it's placeholder text
+    if lorem_hits >= 3:
+        return True
+
+    # Also check for the classic start
+    if text_lower.startswith('lorem ipsum'):
+        return True
+
+    return False
+
+
+def is_meaningless_text(text: str) -> bool:
+    """
+    Detect text that looks like language but has no meaningful English content.
+
+    This catches things like Lorem Ipsum, random Latin, or other
+    text that passes basic gibberish detection but isn't a real query.
+
+    Args:
+        text: User input text
+
+    Returns:
+        True if the text appears to be meaningless (not a real English query)
+    """
+    text_lower = text.strip().lower()
+    words = text_lower.split()
+
+    # Very short queries are fine
+    if len(words) < 4:
+        return False
+
+    # Check for placeholder text first
+    if is_placeholder_text(text):
+        return True
+
+    # Common English words that would appear in real queries
+    # These are very common words that appear in almost any English sentence
+    essential_english_words = {
+        # Articles and pronouns
+        'a', 'an', 'the', 'i', 'we', 'you', 'he', 'she', 'it', 'they',
+        'my', 'your', 'his', 'her', 'its', 'our', 'their',
+        'this', 'that', 'these', 'those',
+        # Common verbs
+        'is', 'are', 'was', 'were', 'be', 'been', 'being',
+        'have', 'has', 'had', 'do', 'does', 'did',
+        'can', 'could', 'will', 'would', 'should', 'may', 'might',
+        'get', 'got', 'make', 'take', 'go', 'come', 'see', 'know',
+        # Prepositions and conjunctions
+        'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from',
+        'and', 'or', 'but', 'if', 'then', 'so', 'because',
+        # Question words
+        'what', 'how', 'when', 'where', 'who', 'why', 'which',
+        # Common nouns
+        'time', 'way', 'day', 'man', 'thing', 'work', 'life', 'people',
+        # Work-related
+        'policy', 'document', 'procedure', 'process', 'form', 'request',
+        'employee', 'manager', 'company', 'team', 'department',
+        'help', 'need', 'find', 'search', 'question', 'answer'
+    }
+
+    # Count how many essential English words are in the text
+    english_word_count = sum(1 for word in words if word in essential_english_words)
+    english_ratio = english_word_count / len(words) if words else 0
+
+    # If less than 15% of words are common English words, likely not a real query
+    # (Real English text typically has 30-50% common words)
+    if len(words) >= 6 and english_ratio < 0.15:
+        return True
+
+    return False
+
+
 def is_gibberish(text: str) -> bool:
     """
     Detect if text is gibberish/random keyboard mashing.
@@ -263,7 +363,16 @@ class QueryClassifier:
                 "original_query": query
             }
 
-        # Step 2: Quick pattern-based check for greetings (fast, no LLM needed)
+        # Step 2: Check for meaningless text (Lorem Ipsum, non-English, etc.)
+        if is_meaningless_text(query):
+            logger.info(f"Query classified as: gibberish (meaningless text) - '{query[:50]}'")
+            return {
+                "query_type": "gibberish",
+                "confidence": "high",
+                "original_query": query
+            }
+
+        # Step 3: Quick pattern-based check for greetings (fast, no LLM needed)
         if is_greeting(query):
             logger.info(f"Query classified as: greeting (pattern match) - '{query[:50]}'")
             return {
@@ -272,7 +381,7 @@ class QueryClassifier:
                 "original_query": query
             }
 
-        # Step 3: Check for off-topic requests (fast, no LLM needed)
+        # Step 4: Check for off-topic requests (fast, no LLM needed)
         if is_off_topic(query):
             logger.info(f"Query classified as: off_topic (pattern match) - '{query[:50]}'")
             return {
@@ -281,7 +390,7 @@ class QueryClassifier:
                 "original_query": query
             }
 
-        # Step 4: Use LLM to classify between system, off_topic, and document queries
+        # Step 5: Use LLM to classify between system, off_topic, and document queries
         classification_prompt = f"""You are a query classifier for a document search system named "Adam" (Amentum Document and Assistance Model).
 
 Your job is to determine if the user is asking about:
@@ -637,6 +746,9 @@ if __name__ == "__main__":
         "asdfghjkl",
         "qwerty zxcvb nmkl",
         "fjdksla jfkdls fjkdla",
+        # Lorem Ipsum / placeholder text (should be classified as 'gibberish')
+        "Lorem ipsum dolor sit amet consectetur adipiscing elit",
+        "Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua",
         # Document queries (should be classified as 'document')
         "What is the PTO policy?",
         "How do I request time off?",
