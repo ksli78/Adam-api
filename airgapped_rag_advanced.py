@@ -687,17 +687,19 @@ INSTRUCTIONS:
 - Provide a direct, helpful answer to the question
 - Use information ONLY from the documents above - do not add information from outside knowledge
 - Include specific details (section numbers, dates, amounts) when relevant
-- IMPORTANT: Add inline citations after EACH claim or bullet point using the actual document filename
-- Citation format: (<span><a href="URL">FileName.pdf</a></span>)
-- NEVER use generic labels like "Document 1" or "Document 2" - always use the actual filename (e.g., EN-PO-0301.pdf)
+- IMPORTANT: Add inline citations after EACH claim using HTML links with the document's URL
+- Each document above has a URL field - use that URL to create clickable citations
+- Citation format: (<span><a href="DOCUMENT_URL_HERE">DocumentName.pdf</a></span>)
 - Place citations immediately after the relevant statement, before the period
 - If information is missing, clearly state what cannot be answered{followup_instruction}
 
-CITATION EXAMPLE:
-✓ CORRECT: "Employees must submit requests via the Decisions tool (<span><a href="https://...">EN-PO-0301.pdf</a></span>)."
-✗ WRONG: "Employees must submit requests via the Decisions tool. For more details, see EN-PO-0301.pdf."
+CITATION FORMAT - YOU MUST USE HTML LINKS:
+For a document with URL: https://example.com/docs/EN-PO-0301.pdf
+✓ CORRECT: "Employees must submit requests via the Decisions tool (<span><a href="https://example.com/docs/EN-PO-0301.pdf">EN-PO-0301.pdf</a></span>)."
+✗ WRONG: "Employees must submit requests (EN-PO-0301.pdf)."
+✗ WRONG: "Employees must submit requests [EN-PO-0301.pdf]."
 
-Now provide your answer with inline citations after each point:"""
+Now provide your answer with inline HTML link citations after each point:"""
 
             logger.info("Starting LLM streaming generation...")
             logger.info(f"[TIMING] Prompt size: {len(prompt)} characters (~{len(prompt.split())} words)")
