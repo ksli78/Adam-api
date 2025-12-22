@@ -4,15 +4,19 @@ Query Classifier and System Query Handler
 Classifies incoming queries to determine if they're about:
 - Greetings (pleasant messages like "Good morning", "Hello")
 - The system itself (meta queries like "What can you do?")
+- Off-topic requests (stories, jokes, weather, general chat)
+- Gibberish/nonsense input
 - Document content (normal RAG queries)
 
 For greetings, generates an introduction response.
 For system queries, generates helpful responses about capabilities.
+For off-topic/gibberish, generates a polite redirect to document queries.
 Document queries are routed to the RAG pipeline.
 """
 
 import logging
 import re
+import string
 from typing import Dict, Any, List
 from ollama_client_lb import OllamaClient
 
@@ -80,6 +84,117 @@ GREETING_PATTERNS = [
 # Compile patterns for efficiency
 COMPILED_GREETING_PATTERNS = [re.compile(p, re.IGNORECASE) for p in GREETING_PATTERNS]
 
+# Off-topic patterns - requests that are clearly not about company documents
+OFF_TOPIC_PATTERNS = [
+    r'^tell\s*(me)?\s*(a|another)?\s*story',
+    r'^tell\s*(me)?\s*(a|another)?\s*joke',
+    r'^(what|how).*weather',
+    r'^(what|who)\s*(is|are|was|were)\s*(the)?\s*(president|king|queen|prime minister)',
+    r'^(write|compose|create)\s*(me)?\s*(a|an)?\s*(poem|song|story|essay|haiku)',
+    r'^(sing|dance|play)',
+    r'^(what|when|where)\s*(is|are|was|were)\s*(the)?\s*(world cup|super bowl|olympics|election)',
+    r'^(calculate|compute|solve|what is)\s*\d+\s*[\+\-\*\/\^]\s*\d+',
+    r'^(translate|say)\s*.+\s*(in|to)\s*(spanish|french|german|chinese|japanese)',
+    r'^(play|start)\s*(a)?\s*(game|music|video)',
+    r'^(can you|do you)\s*(feel|love|hate|dream|sleep|eat)',
+    r'^(are you|do you have)\s*(alive|conscious|sentient|feelings|emotions)',
+    r'^(what\'?s?|how\'?s?)\s*(the)?\s*(news|stock|bitcoin|crypto)',
+    r'^(recommend|suggest)\s*(me)?\s*(a)?\s*(movie|book|restaurant|song)',
+    r'^(who|what)\s*(will|is going to)\s*win',
+    r'^(predict|forecast)',
+]
+
+COMPILED_OFF_TOPIC_PATTERNS = [re.compile(p, re.IGNORECASE) for p in OFF_TOPIC_PATTERNS]
+
+
+def is_off_topic(text: str) -> bool:
+    """
+    Check if text is an off-topic request not related to company documents.
+
+    Args:
+        text: User input text
+
+    Returns:
+        True if the text matches a known off-topic pattern
+    """
+    text = text.strip()
+    for pattern in COMPILED_OFF_TOPIC_PATTERNS:
+        if pattern.search(text):
+            return True
+    return False
+
+
+def is_gibberish(text: str) -> bool:
+    """
+    Detect if text is gibberish/random keyboard mashing.
+
+    Uses multiple heuristics:
+    1. Very low ratio of vowels to consonants
+    2. Unusual character repetition patterns
+    3. Very few real English words
+    4. High ratio of unusual character combinations
+
+    Args:
+        text: User input text
+
+    Returns:
+        True if the text appears to be gibberish
+    """
+    text = text.strip().lower()
+
+    # Very short inputs are not gibberish (could be abbreviations)
+    if len(text) < 5:
+        return False
+
+    # Remove punctuation and spaces for analysis
+    alpha_only = ''.join(c for c in text if c.isalpha())
+
+    if len(alpha_only) < 3:
+        # Mostly non-alphabetic - could be gibberish
+        if len(text) > 10:
+            return True
+        return False
+
+    # Count vowels and consonants
+    vowels = set('aeiou')
+    vowel_count = sum(1 for c in alpha_only if c in vowels)
+    consonant_count = len(alpha_only) - vowel_count
+
+    # Normal English has ~40% vowels, gibberish often has very few or too many
+    vowel_ratio = vowel_count / len(alpha_only) if alpha_only else 0
+
+    # Check for repeated character patterns (like "asdfasdf" or "jjjjkkk")
+    repeated_chars = sum(1 for i in range(len(alpha_only) - 1) if alpha_only[i] == alpha_only[i + 1])
+    repeat_ratio = repeated_chars / len(alpha_only) if alpha_only else 0
+
+    # Check for common letter combinations that indicate real words
+    common_bigrams = ['th', 'he', 'in', 'er', 'an', 'on', 'at', 'en', 'nd', 'ti', 'es', 'or', 'te', 'of', 'ed', 'is', 'it', 'al', 'ar', 'st', 'to', 'nt', 'ng', 'se', 're', 'ha', 'as', 'ou', 'io', 'le', 'co', 'me', 'de', 'hi', 'ri', 'ro', 'ic', 'ne', 'ea', 'ra', 'ce', 'li', 'ch', 'wh', 'ho', 'be', 'ca', 'ma', 'no', 'do']
+    bigram_hits = sum(1 for bg in common_bigrams if bg in alpha_only)
+    expected_bigrams = len(alpha_only) / 5  # Rough estimate of expected hits
+
+    # Gibberish detection rules
+    is_likely_gibberish = False
+
+    # Rule 1: Very unusual vowel ratio
+    if vowel_ratio < 0.1 or vowel_ratio > 0.7:
+        is_likely_gibberish = True
+
+    # Rule 2: Too many repeated characters
+    if repeat_ratio > 0.4:
+        is_likely_gibberish = True
+
+    # Rule 3: Very few common English bigrams
+    if len(alpha_only) > 8 and bigram_hits < expected_bigrams * 0.3:
+        is_likely_gibberish = True
+
+    # Override: If we find some common words, it's probably not gibberish
+    common_words = ['the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 'our', 'out', 'what', 'how', 'who', 'why', 'when', 'where', 'which', 'policy', 'document', 'help', 'find', 'search', 'question']
+    words_in_text = text.split()
+    if any(word in common_words for word in words_in_text):
+        is_likely_gibberish = False
+
+    return is_likely_gibberish
+
 
 def is_greeting(text: str) -> bool:
     """
@@ -125,10 +240,12 @@ class QueryClassifier:
 
     def classify_query(self, query: str) -> Dict[str, Any]:
         """
-        Classify a query as 'greeting', 'system', or 'document' query.
+        Classify a query as 'greeting', 'system', 'off_topic', 'gibberish', or 'document' query.
 
         Greeting queries are pleasant messages like "Good morning", "Hello"
         System queries are about the RAG system itself (e.g., "What can you do?")
+        Off-topic queries are requests unrelated to documents (e.g., "Tell me a story")
+        Gibberish queries are nonsense/random text
         Document queries are about content in documents (e.g., "What is the PTO policy?")
 
         Args:
@@ -137,7 +254,16 @@ class QueryClassifier:
         Returns:
             Dict with 'query_type', 'confidence', and 'original_query'
         """
-        # Step 1: Quick pattern-based check for greetings (fast, no LLM needed)
+        # Step 1: Check for gibberish first (fast, no LLM needed)
+        if is_gibberish(query):
+            logger.info(f"Query classified as: gibberish - '{query[:50]}'")
+            return {
+                "query_type": "gibberish",
+                "confidence": "high",
+                "original_query": query
+            }
+
+        # Step 2: Quick pattern-based check for greetings (fast, no LLM needed)
         if is_greeting(query):
             logger.info(f"Query classified as: greeting (pattern match) - '{query[:50]}'")
             return {
@@ -146,11 +272,22 @@ class QueryClassifier:
                 "original_query": query
             }
 
-        classification_prompt = f"""You are a query classifier for a document search system named "Adam" (Amentum Document Assistant and Manager).
+        # Step 3: Check for off-topic requests (fast, no LLM needed)
+        if is_off_topic(query):
+            logger.info(f"Query classified as: off_topic (pattern match) - '{query[:50]}'")
+            return {
+                "query_type": "off_topic",
+                "confidence": "high",
+                "original_query": query
+            }
+
+        # Step 4: Use LLM to classify between system, off_topic, and document queries
+        classification_prompt = f"""You are a query classifier for a document search system named "Adam" (Amentum Document and Assistance Model).
 
 Your job is to determine if the user is asking about:
-1. THE SYSTEM ITSELF (system query) - Questions specifically about what Adam/the search system is, what features it has, how to use Adam's interface
-2. DOCUMENT CONTENT (document query) - Questions about company policies, procedures, processes, or ANY information that would be found in company documents
+1. THE SYSTEM ITSELF (SYSTEM) - Questions specifically about what Adam/the search system is, what features it has, how to use Adam's interface
+2. DOCUMENT CONTENT (DOCUMENT) - Questions about company policies, procedures, processes, or ANY information that would be found in company documents
+3. OFF-TOPIC REQUESTS (OFFTOPIC) - Requests that have nothing to do with company documents or the system, like stories, jokes, weather, general knowledge, math, games, etc.
 
 USER QUERY: "{query}"
 
@@ -158,34 +295,39 @@ CRITICAL RULES:
 - If the question is about company policies, procedures, or processes → DOCUMENT
 - If the question is "how do I" do something at the company (request PTO, submit forms, follow procedures) → DOCUMENT
 - If the question is about using or understanding company systems/processes → DOCUMENT
-- ONLY classify as SYSTEM if specifically asking about Adam's features or capabilities
+- If specifically asking about Adam's features or capabilities → SYSTEM
+- If asking for stories, jokes, games, weather, general knowledge, or anything clearly unrelated to company documents → OFFTOPIC
+- If the query makes no sense or seems like random text → OFFTOPIC
 
-EXAMPLES OF SYSTEM QUERIES (asking about Adam itself):
+EXAMPLES OF SYSTEM QUERIES:
 - "What is your name?"
 - "What can you do?"
 - "Introduce yourself"
 - "How do I use this search system?"
-- "What are you?"
-- "Tell me about yourself Adam"
-- "What kind of questions can you answer?"
-- "How does Adam work?"
-- "What features does this system have?"
 
-EXAMPLES OF DOCUMENT QUERIES (asking about company information):
+EXAMPLES OF DOCUMENT QUERIES:
 - "What is the PTO policy?"
 - "How do I request time off?"
 - "How do I request PTO?"
 - "How do I submit a timesheet?"
 - "What are the safety procedures?"
 - "Does Amentum have a dress code?"
-- "What is the maximum PTO accrual?"
-- "How do I apply for leave?"
-- "What is the process for requesting equipment?"
-- "How do I report an incident?"
+
+EXAMPLES OF OFF-TOPIC QUERIES:
+- "Tell me a story"
+- "Tell me a joke"
+- "What's the weather like?"
+- "Who is the president?"
+- "Calculate 5 + 3"
+- "Write me a poem"
+- "asdfghjkl" (gibberish)
+- "What's 2+2?"
+- "Tell me about dinosaurs"
 
 Respond with ONLY ONE WORD:
 - "SYSTEM" if asking about Adam/the search system itself
 - "DOCUMENT" if asking about company policies, procedures, or processes
+- "OFFTOPIC" if asking for something unrelated to company documents
 
 Your response:"""
 
@@ -205,26 +347,28 @@ Your response:"""
             # Normalize response
             if "SYSTEM" in classification:
                 query_type = "system"
+            elif "OFFTOPIC" in classification or "OFF" in classification:
+                query_type = "off_topic"
             elif "DOCUMENT" in classification:
                 query_type = "document"
             else:
-                # Default to document query if unclear
-                logger.warning(f"Unclear classification: {classification}, defaulting to 'document'")
-                query_type = "document"
+                # Default to off_topic if unclear (safer than searching documents)
+                logger.warning(f"Unclear classification: {classification}, defaulting to 'off_topic'")
+                query_type = "off_topic"
 
             logger.info(f"Query classified as: {query_type} - '{query[:50]}...'")
 
             return {
                 "query_type": query_type,
-                "confidence": "high" if classification in ["SYSTEM", "DOCUMENT"] else "low",
+                "confidence": "high" if classification in ["SYSTEM", "DOCUMENT", "OFFTOPIC"] else "low",
                 "original_query": query
             }
 
         except Exception as e:
             logger.error(f"Error classifying query: {e}")
-            # Default to document query on error
+            # Default to off_topic on error (safer than searching documents)
             return {
-                "query_type": "document",
+                "query_type": "off_topic",
                 "confidence": "low",
                 "original_query": query,
                 "error": str(e)
@@ -385,6 +529,57 @@ YOUR RESPONSE:"""
         logger.info(f"Generated no-results response for: '{query[:50]}'")
         return response
 
+    def generate_off_topic_response(self, query: str = "") -> str:
+        """
+        Generate a polite response for off-topic queries.
+
+        Explains that the system is designed for company document queries
+        and provides guidance on what types of questions it can answer.
+
+        Args:
+            query: The user's off-topic query
+
+        Returns:
+            Polite redirect message
+        """
+        response = (
+            f"I'm {SYSTEM_INFO['name']}, a document search assistant specifically designed "
+            f"to help you find information in company documents.<br><br>"
+            f"I'm not able to help with that particular request, but I <strong>can</strong> help you with:<br>"
+            f"• Finding information in company policies and procedures<br>"
+            f"• Answering questions about guidelines and processes<br>"
+            f"• Locating specific documents or sections<br><br>"
+            f"<strong>Try asking something like:</strong><br>"
+            f"• \"What is the PTO policy?\"<br>"
+            f"• \"How do I submit a timesheet?\"<br>"
+            f"• \"What are the safety procedures?\"<br><br>"
+            f"How can I help you find information in our documents?"
+        )
+
+        logger.info(f"Generated off-topic response for: '{query[:50]}'")
+        return response
+
+    def generate_gibberish_response(self) -> str:
+        """
+        Generate a helpful response for gibberish/nonsense input.
+
+        Returns:
+            Message asking the user to rephrase their question
+        """
+        response = (
+            "I'm sorry, I couldn't understand that input.<br><br>"
+            f"I'm {SYSTEM_INFO['name']}, a document search assistant. "
+            f"Please ask me a clear question about company documents, policies, or procedures.<br><br>"
+            f"<strong>Example questions:</strong><br>"
+            f"• \"What is the PTO policy?\"<br>"
+            f"• \"How do I request time off?\"<br>"
+            f"• \"What are the safety procedures?\"<br><br>"
+            f"What would you like to know?"
+        )
+
+        logger.info("Generated gibberish response")
+        return response
+
 
 # Singleton instance
 _classifier_instance = None
@@ -414,7 +609,7 @@ if __name__ == "__main__":
 
     classifier = get_query_classifier()
 
-    # Test queries - including greetings, system queries, and document queries
+    # Test queries - including all types
     test_queries = [
         # Greetings (should be classified as 'greeting')
         "Hello",
@@ -430,6 +625,18 @@ if __name__ == "__main__":
         "Tell me about yourself",
         "What kind of documents can you search?",
         "How does this system work?",
+        # Off-topic queries (should be classified as 'off_topic')
+        "Tell me a story",
+        "Tell me another story",
+        "Tell me a joke",
+        "What's the weather like?",
+        "Who is the president?",
+        "Write me a poem",
+        "What's 2+2?",
+        # Gibberish queries (should be classified as 'gibberish')
+        "asdfghjkl",
+        "qwerty zxcvb nmkl",
+        "fjdksla jfkdls fjkdla",
         # Document queries (should be classified as 'document')
         "What is the PTO policy?",
         "How do I request time off?",
@@ -454,6 +661,12 @@ if __name__ == "__main__":
             print(f"RESPONSE:\n{response}")
         elif result['query_type'] == 'system':
             response = classifier.generate_system_response(query)
+            print(f"RESPONSE:\n{response}")
+        elif result['query_type'] == 'off_topic':
+            response = classifier.generate_off_topic_response(query)
+            print(f"RESPONSE:\n{response}")
+        elif result['query_type'] == 'gibberish':
+            response = classifier.generate_gibberish_response()
             print(f"RESPONSE:\n{response}")
         else:
             print("RESPONSE: [Would search documents for this query]")

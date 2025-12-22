@@ -1513,7 +1513,33 @@ async def query(request: QueryRequest):
                 "suggested_followups": []
             }
 
-        # Step 4: Handle document queries - route to appropriate search method
+        # Step 4: Handle off-topic queries (stories, jokes, etc.)
+        if query_type == 'off_topic':
+            answer = rag_pipeline.query_classifier.generate_off_topic_response(request.prompt)
+            return {
+                "answer": answer,
+                "citations": [],
+                "retrieval_stats": {
+                    "query_type": "off_topic",
+                    "message": "Off-topic query - no document search performed"
+                },
+                "suggested_followups": []
+            }
+
+        # Step 5: Handle gibberish/nonsense input
+        if query_type == 'gibberish':
+            answer = rag_pipeline.query_classifier.generate_gibberish_response()
+            return {
+                "answer": answer,
+                "citations": [],
+                "retrieval_stats": {
+                    "query_type": "gibberish",
+                    "message": "Unrecognized input - no document search performed"
+                },
+                "suggested_followups": []
+            }
+
+        # Step 6: Handle document queries - route to appropriate search method
         if request.use_llm_selection:
             logger.info("Using LLM-based document selection mode")
             result = await rag_pipeline.query_with_llm_selection(
@@ -1610,18 +1636,22 @@ async def query_stream_endpoint(request: QueryRequest):
         query_type = classification.get('query_type', 'document')
         logger.info(f"Query classified as: {query_type}")
 
-        # Step 2: Handle greetings and system queries with quick streaming response
-        if query_type in ('greeting', 'system'):
+        # Step 2: Handle non-document queries with quick streaming response
+        if query_type in ('greeting', 'system', 'off_topic', 'gibberish'):
             async def stream_non_rag_response():
-                """Stream a non-RAG response (greeting or system info)."""
+                """Stream a non-RAG response (greeting, system info, off-topic, or gibberish)."""
                 yield f"data: {json.dumps({'type': 'status', 'message': 'Processing...'})}\n\n"
                 await asyncio.sleep(0)
 
-                # Generate the appropriate response
+                # Generate the appropriate response based on query type
                 if query_type == 'greeting':
                     answer = rag_pipeline.query_classifier.generate_greeting_response(request.prompt)
-                else:
+                elif query_type == 'system':
                     answer = rag_pipeline.query_classifier.generate_system_response(request.prompt)
+                elif query_type == 'off_topic':
+                    answer = rag_pipeline.query_classifier.generate_off_topic_response(request.prompt)
+                else:  # gibberish
+                    answer = rag_pipeline.query_classifier.generate_gibberish_response()
 
                 # Stream the response token by token (simulates LLM streaming for consistent UX)
                 # Split by HTML tags and words for natural streaming
