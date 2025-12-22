@@ -479,8 +479,9 @@ class AdvancedRAGPipeline:
             # Citations are in format: (<span><a href="URL">FileName.pdf</a></span>)
             import re
             cited_filenames = set()
-            citation_pattern = r'<a href="[^"]*">([^<]+\.pdf)</a>'
-            matches = re.findall(citation_pattern, answer)
+            # Pattern to extract filenames from inline citations like (EN-PO-0301.pdf)
+            citation_pattern = r'\(([^)]+\.pdf)\)'
+            matches = re.findall(citation_pattern, answer, re.IGNORECASE)
             for filename in matches:
                 cited_filenames.add(filename)
 
@@ -687,19 +688,12 @@ INSTRUCTIONS:
 - Provide a direct, helpful answer to the question
 - Use information ONLY from the documents above - do not add information from outside knowledge
 - Include specific details (section numbers, dates, amounts) when relevant
-- IMPORTANT: Add inline citations after EACH claim using HTML links with the document's URL
-- Each document above has a URL field - use that URL to create clickable citations
-- Citation format: (<span><a href="DOCUMENT_URL_HERE">DocumentName.pdf</a></span>)
-- Place citations immediately after the relevant statement, before the period
+- Add inline citations after EACH claim using the document filename in parentheses
+- Citation format: (DocumentName.pdf) - example: (EN-PO-0301.pdf)
+- Place citations immediately after the relevant statement
 - If information is missing, clearly state what cannot be answered{followup_instruction}
 
-CITATION FORMAT - YOU MUST USE HTML LINKS:
-For a document with URL: https://example.com/docs/EN-PO-0301.pdf
-✓ CORRECT: "Employees must submit requests via the Decisions tool (<span><a href="https://example.com/docs/EN-PO-0301.pdf">EN-PO-0301.pdf</a></span>)."
-✗ WRONG: "Employees must submit requests (EN-PO-0301.pdf)."
-✗ WRONG: "Employees must submit requests [EN-PO-0301.pdf]."
-
-Now provide your answer with inline HTML link citations after each point:"""
+Now provide your answer with inline citations:"""
 
             logger.info("Starting LLM streaming generation...")
             logger.info(f"[TIMING] Prompt size: {len(prompt)} characters (~{len(prompt.split())} words)")
@@ -762,12 +756,12 @@ Now provide your answer with inline HTML link citations after each point:"""
             logger.info(f"[TIMING] Expected: 30-50+ tokens/sec on GPU, <10 tokens/sec on CPU")
 
             # Extract which documents were actually cited in the answer
-            # Citations are in format: (<span><a href="URL">FileName.pdf</a></span>)
+            # Citations are now in simple format: (FileName.pdf)
             import re
             cited_filenames = set()
-            # Pattern to extract filenames from inline citations
-            citation_pattern = r'<a href="[^"]*">([^<]+\.pdf)</a>'
-            matches = re.findall(citation_pattern, full_answer)
+            # Pattern to extract filenames from inline citations like (EN-PO-0301.pdf)
+            citation_pattern = r'\(([^)]+\.pdf)\)'
+            matches = re.findall(citation_pattern, full_answer, re.IGNORECASE)
             for filename in matches:
                 cited_filenames.add(filename)
 
@@ -1058,8 +1052,9 @@ Now generate follow-up questions:"""
             # Extract which documents were actually cited in the answer
             import re
             cited_filenames = set()
-            citation_pattern = r'<a href="[^"]*">([^<]+\.pdf)</a>'
-            matches = re.findall(citation_pattern, answer)
+            # Pattern to extract filenames from inline citations like (EN-PO-0301.pdf)
+            citation_pattern = r'\(([^)]+\.pdf)\)'
+            matches = re.findall(citation_pattern, answer, re.IGNORECASE)
             for filename in matches:
                 cited_filenames.add(filename)
 
