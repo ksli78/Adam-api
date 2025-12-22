@@ -35,6 +35,7 @@ from semantic_chunker import get_semantic_chunker, DocumentSection
 from metadata_extractor import get_metadata_extractor
 from parent_child_store import get_parent_child_store
 from sql_routes import sql_router
+from query_classifier import get_query_classifier
 
 # Ollama for answer generation
 from ollama_client_lb import OllamaClient
@@ -126,6 +127,12 @@ class AdvancedRAGPipeline:
 
         # Initialize load-balanced Ollama client for answer generation
         self.ollama_client = OllamaClient(hosts=OLLAMA_HOSTS, strategy="round-robin")
+
+        # Initialize query classifier for smart filtering (greetings, system queries vs document queries)
+        self.query_classifier = get_query_classifier(
+            ollama_hosts=OLLAMA_HOSTS,
+            model_name=LLM_MODEL
+        )
 
         # Warm up Ollama model on ALL instances (load into GPU memory to avoid 30-60s delay)
         # IMPORTANT: Must warm up each instance separately to ensure load balancer works smoothly
@@ -572,7 +579,26 @@ class AdvancedRAGPipeline:
             MIN_CHUNKS_THRESHOLD = 1
             if len(child_results) < MIN_CHUNKS_THRESHOLD:
                 logger.warning(f"Insufficient results found: {len(child_results)} child chunks")
-                yield f"data: {json.dumps({'type': 'error', 'message': 'No relevant documents found'})}\n\n"
+                # Stream a helpful "I don't know" response instead of just an error
+                no_results_msg = (
+                    "I wasn't able to find any relevant information in the available documents "
+                    "to answer your question.<br><br>"
+                    "<strong>Suggestions:</strong><br>"
+                    "• Try rephrasing your question with different keywords<br>"
+                    "• Use more specific terms (e.g., include policy numbers like EN-PO-XXXX)<br>"
+                    "• Break down complex questions into simpler parts<br>"
+                    "• Check the <a href='https://portal.amentumspacemissions.com/MS/Pages/MSDefaultHomePage.aspx' target='_blank'>Management System</a> "
+                    "where all policy documents are housed"
+                )
+                # Stream the response token by token
+                import re
+                tokens = re.findall(r'<[^>]+>|[^\s<]+|\s+', no_results_msg)
+                for token in tokens:
+                    yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+                    await asyncio.sleep(0.01)
+                yield f"data: {json.dumps({'type': 'sources', 'citations': []})}\n\n"
+                await asyncio.sleep(0)
+                yield f"data: {json.dumps({'type': 'done', 'stats': {'query_type': 'no_results', 'child_chunks_retrieved': 0}})}\n\n"
                 await asyncio.sleep(0)
                 return
 
@@ -627,7 +653,26 @@ class AdvancedRAGPipeline:
 
             if not parent_results:
                 logger.warning("No parent chunks found after reranking")
-                yield f"data: {json.dumps({'type': 'error', 'message': 'No relevant information found'})}\n\n"
+                # Stream a helpful "I don't know" response instead of just an error
+                no_results_msg = (
+                    "I wasn't able to find sufficiently relevant information in the available documents "
+                    "to confidently answer your question.<br><br>"
+                    "<strong>Suggestions:</strong><br>"
+                    "• Try rephrasing your question with different keywords<br>"
+                    "• Use more specific terms (e.g., include policy numbers like EN-PO-XXXX)<br>"
+                    "• Break down complex questions into simpler parts<br>"
+                    "• Check the <a href='https://portal.amentumspacemissions.com/MS/Pages/MSDefaultHomePage.aspx' target='_blank'>Management System</a> "
+                    "where all policy documents are housed"
+                )
+                # Stream the response token by token
+                import re
+                tokens = re.findall(r'<[^>]+>|[^\s<]+|\s+', no_results_msg)
+                for token in tokens:
+                    yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+                    await asyncio.sleep(0.01)
+                yield f"data: {json.dumps({'type': 'sources', 'citations': []})}\n\n"
+                await asyncio.sleep(0)
+                yield f"data: {json.dumps({'type': 'done', 'stats': {'query_type': 'no_results', 'child_chunks_retrieved': len(child_results), 'parent_chunks_used': 0}})}\n\n"
                 await asyncio.sleep(0)
                 return
 
@@ -1437,7 +1482,38 @@ async def query(request: QueryRequest):
     - temperature: LLM temperature (default: 0.3)
     """
     try:
-        # Route to appropriate query method based on use_llm_selection
+        # Step 1: Classify the query to determine routing
+        classification = rag_pipeline.query_classifier.classify_query(request.prompt)
+        query_type = classification.get('query_type', 'document')
+        logger.info(f"Query classified as: {query_type}")
+
+        # Step 2: Handle greetings with introduction response
+        if query_type == 'greeting':
+            answer = rag_pipeline.query_classifier.generate_greeting_response(request.prompt)
+            return {
+                "answer": answer,
+                "citations": [],
+                "retrieval_stats": {
+                    "query_type": "greeting",
+                    "message": "Greeting response - no document search performed"
+                },
+                "suggested_followups": []
+            }
+
+        # Step 3: Handle system queries (about the system itself)
+        if query_type == 'system':
+            answer = rag_pipeline.query_classifier.generate_system_response(request.prompt)
+            return {
+                "answer": answer,
+                "citations": [],
+                "retrieval_stats": {
+                    "query_type": "system",
+                    "message": "System information response - no document search performed"
+                },
+                "suggested_followups": []
+            }
+
+        # Step 4: Handle document queries - route to appropriate search method
         if request.use_llm_selection:
             logger.info("Using LLM-based document selection mode")
             result = await rag_pipeline.query_with_llm_selection(
@@ -1529,7 +1605,51 @@ async def query_stream_endpoint(request: QueryRequest):
         logger.info(f"[ENDPOINT CALLED] /query-stream endpoint invoked for query: {request.prompt[:100]}")
         logger.info(f"[DEBUG] include_followups parameter value: {request.include_followups} (type: {type(request.include_followups).__name__})")
 
-        # Generate streaming response
+        # Step 1: Classify the query to determine routing
+        classification = rag_pipeline.query_classifier.classify_query(request.prompt)
+        query_type = classification.get('query_type', 'document')
+        logger.info(f"Query classified as: {query_type}")
+
+        # Step 2: Handle greetings and system queries with quick streaming response
+        if query_type in ('greeting', 'system'):
+            async def stream_non_rag_response():
+                """Stream a non-RAG response (greeting or system info)."""
+                yield f"data: {json.dumps({'type': 'status', 'message': 'Processing...'})}\n\n"
+                await asyncio.sleep(0)
+
+                # Generate the appropriate response
+                if query_type == 'greeting':
+                    answer = rag_pipeline.query_classifier.generate_greeting_response(request.prompt)
+                else:
+                    answer = rag_pipeline.query_classifier.generate_system_response(request.prompt)
+
+                # Stream the response token by token (simulates LLM streaming for consistent UX)
+                # Split by HTML tags and words for natural streaming
+                import re
+                tokens = re.findall(r'<[^>]+>|[^\s<]+|\s+', answer)
+                for token in tokens:
+                    yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+                    await asyncio.sleep(0.01)  # Small delay for natural streaming effect
+
+                # Send empty citations
+                yield f"data: {json.dumps({'type': 'sources', 'citations': []})}\n\n"
+                await asyncio.sleep(0)
+
+                # Send done signal
+                yield f"data: {json.dumps({'type': 'done', 'stats': {'query_type': query_type, 'answer_length': len(answer)}})}\n\n"
+                await asyncio.sleep(0)
+
+            return StreamingResponse(
+                stream_non_rag_response(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                }
+            )
+
+        # Step 3: Handle document queries with full RAG pipeline
         return StreamingResponse(
             rag_pipeline.query_stream(
                 question=request.prompt,

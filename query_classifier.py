@@ -2,14 +2,17 @@
 Query Classifier and System Query Handler
 
 Classifies incoming queries to determine if they're about:
+- Greetings (pleasant messages like "Good morning", "Hello")
 - The system itself (meta queries like "What can you do?")
 - Document content (normal RAG queries)
 
-For system queries, generates helpful responses about capabilities
-without searching documents.
+For greetings, generates an introduction response.
+For system queries, generates helpful responses about capabilities.
+Document queries are routed to the RAG pipeline.
 """
 
 import logging
+import re
 from typing import Dict, Any, List
 from ollama_client_lb import OllamaClient
 
@@ -56,6 +59,44 @@ SYSTEM_INFO = {
     ]
 }
 
+# Common greeting patterns for quick detection (case-insensitive)
+# These bypass the LLM classification for efficiency
+GREETING_PATTERNS = [
+    r'^(hi|hello|hey|howdy|hiya|yo)[\s\!\?\.\,]*$',
+    r'^good\s*(morning|afternoon|evening|night|day)[\s\!\?\.\,]*$',
+    r'^(morning|afternoon|evening)[\s\!\?\.\,]*$',
+    r'^(greetings|salutations)[\s\!\?\.\,]*$',
+    r'^what\'?s?\s*up[\s\!\?\.\,]*$',
+    r'^how\s*(are|r)\s*(you|u)[\s\!\?\.\,]*$',
+    r'^how\'?s?\s*it\s*going[\s\!\?\.\,]*$',
+    r'^(sup|wassup|wazzup)[\s\!\?\.\,]*$',
+    r'^(hola|bonjour|ciao)[\s\!\?\.\,]*$',
+    r'^(thanks|thank\s*you|thx|ty)[\s\!\?\.\,]*$',
+    r'^(bye|goodbye|see\s*you|later|cya)[\s\!\?\.\,]*$',
+    r'^nice\s*to\s*meet\s*you[\s\!\?\.\,]*$',
+    r'^pleased\s*to\s*meet\s*you[\s\!\?\.\,]*$',
+]
+
+# Compile patterns for efficiency
+COMPILED_GREETING_PATTERNS = [re.compile(p, re.IGNORECASE) for p in GREETING_PATTERNS]
+
+
+def is_greeting(text: str) -> bool:
+    """
+    Quick check if text is a greeting using regex patterns.
+
+    Args:
+        text: User input text
+
+    Returns:
+        True if the text matches a known greeting pattern
+    """
+    text = text.strip()
+    for pattern in COMPILED_GREETING_PATTERNS:
+        if pattern.match(text):
+            return True
+    return False
+
 
 class QueryClassifier:
     """
@@ -84,8 +125,9 @@ class QueryClassifier:
 
     def classify_query(self, query: str) -> Dict[str, Any]:
         """
-        Classify a query as either 'system' or 'document' query.
+        Classify a query as 'greeting', 'system', or 'document' query.
 
+        Greeting queries are pleasant messages like "Good morning", "Hello"
         System queries are about the RAG system itself (e.g., "What can you do?")
         Document queries are about content in documents (e.g., "What is the PTO policy?")
 
@@ -93,8 +135,17 @@ class QueryClassifier:
             query: User's question
 
         Returns:
-            Dict with 'query_type', 'confidence', and 'reasoning'
+            Dict with 'query_type', 'confidence', and 'original_query'
         """
+        # Step 1: Quick pattern-based check for greetings (fast, no LLM needed)
+        if is_greeting(query):
+            logger.info(f"Query classified as: greeting (pattern match) - '{query[:50]}'")
+            return {
+                "query_type": "greeting",
+                "confidence": "high",
+                "original_query": query
+            }
+
         classification_prompt = f"""You are a query classifier for a document search system named "Adam" (Amentum Document Assistant and Manager).
 
 Your job is to determine if the user is asking about:
@@ -256,6 +307,84 @@ YOUR RESPONSE:"""
                 f"Just ask me a question about any company document, and I'll search for the answer!"
             )
 
+    def generate_greeting_response(self, greeting: str = "") -> str:
+        """
+        Generate a friendly introduction response for greetings.
+
+        Returns a consistent, helpful introduction that explains what
+        the system can do.
+
+        Args:
+            greeting: The user's greeting (for context)
+
+        Returns:
+            Friendly introduction message
+        """
+        # Determine appropriate greeting response based on input
+        greeting_lower = greeting.lower().strip()
+
+        # Reciprocate the greeting appropriately
+        if any(x in greeting_lower for x in ['morning']):
+            greeting_reply = "Good morning!"
+        elif any(x in greeting_lower for x in ['afternoon']):
+            greeting_reply = "Good afternoon!"
+        elif any(x in greeting_lower for x in ['evening']):
+            greeting_reply = "Good evening!"
+        elif any(x in greeting_lower for x in ['night']):
+            greeting_reply = "Good evening!"
+        elif any(x in greeting_lower for x in ['thanks', 'thank']):
+            greeting_reply = "You're welcome!"
+        elif any(x in greeting_lower for x in ['bye', 'goodbye', 'see you', 'later', 'cya']):
+            greeting_reply = "Goodbye! Feel free to come back anytime you have questions."
+            return greeting_reply
+        else:
+            greeting_reply = "Hello!"
+
+        # Build a helpful introduction
+        introduction = (
+            f"{greeting_reply} I'm {SYSTEM_INFO['name']} ({SYSTEM_INFO['full_name']}), "
+            f"your AI-powered assistant for searching company documents.<br><br>"
+            f"<strong>What I can help with:</strong><br>"
+            f"• Search and retrieve information from company policy documents<br>"
+            f"• Answer questions about procedures, policies, and guidelines<br>"
+            f"• Provide direct citations with source documents and section numbers<br><br>"
+            f"<strong>How to use me:</strong><br>"
+            f"Just ask me a question about any company document! For example:<br>"
+            f"• \"What is the PTO policy?\"<br>"
+            f"• \"How do I request time off?\"<br>"
+            f"• \"What are the safety procedures?\"<br><br>"
+            f"What would you like to know?"
+        )
+
+        logger.info(f"Generated greeting response for: '{greeting[:50]}'")
+        return introduction
+
+    def generate_no_results_response(self, query: str) -> str:
+        """
+        Generate a helpful response when no relevant documents are found.
+
+        Args:
+            query: The user's original query
+
+        Returns:
+            Helpful message explaining that no results were found
+        """
+        response = (
+            "I wasn't able to find any relevant information in the available documents "
+            "to answer your question.<br><br>"
+            "<strong>Suggestions:</strong><br>"
+            "• Try rephrasing your question with different keywords<br>"
+            "• Use more specific terms (e.g., include policy numbers like EN-PO-XXXX)<br>"
+            "• Break down complex questions into simpler parts<br>"
+            "• Check the <a href='https://portal.amentumspacemissions.com/MS/Pages/MSDefaultHomePage.aspx' target='_blank'>Management System</a> "
+            "where all policy documents are housed<br><br>"
+            "If you're looking for a document that hasn't been uploaded yet, "
+            "please contact your administrator."
+        )
+
+        logger.info(f"Generated no-results response for: '{query[:50]}'")
+        return response
+
 
 # Singleton instance
 _classifier_instance = None
@@ -285,17 +414,26 @@ if __name__ == "__main__":
 
     classifier = get_query_classifier()
 
-    # Test queries
+    # Test queries - including greetings, system queries, and document queries
     test_queries = [
+        # Greetings (should be classified as 'greeting')
+        "Hello",
+        "Good morning",
+        "Hi!",
+        "Hey there",
+        "How are you?",
+        "Thanks!",
+        # System queries (should be classified as 'system')
         "What is your name?",
         "What can you do?",
         "Introduce yourself",
-        "What is the PTO policy?",
-        "How do I request time off?",
         "Tell me about yourself",
         "What kind of documents can you search?",
-        "Does Amentum have a dress code?",
         "How does this system work?",
+        # Document queries (should be classified as 'document')
+        "What is the PTO policy?",
+        "How do I request time off?",
+        "Does Amentum have a dress code?",
         "What are the safety procedures for confined spaces?"
     ]
 
@@ -310,9 +448,14 @@ if __name__ == "__main__":
         result = classifier.classify_query(query)
         print(f"TYPE: {result['query_type']} (confidence: {result['confidence']})")
 
-        # If system query, generate response
-        if result['query_type'] == 'system':
+        # Generate appropriate response based on type
+        if result['query_type'] == 'greeting':
+            response = classifier.generate_greeting_response(query)
+            print(f"RESPONSE:\n{response}")
+        elif result['query_type'] == 'system':
             response = classifier.generate_system_response(query)
             print(f"RESPONSE:\n{response}")
+        else:
+            print("RESPONSE: [Would search documents for this query]")
 
         print("-" * 80)
