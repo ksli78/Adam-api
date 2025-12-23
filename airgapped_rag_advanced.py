@@ -799,16 +799,27 @@ QUESTION:
 DOCUMENTS:
 {context}
 
-INSTRUCTIONS:
-- Provide a direct, helpful answer to the question
-- Use information ONLY from the documents above - do not add information from outside knowledge
-- Include specific details (section numbers, dates, amounts) when relevant
-- Add inline citations after EACH claim using the document filename in parentheses
-- Citation format: (DocumentName.pdf) - example: (EN-PO-0301.pdf)
-- Place citations immediately after the relevant statement
-- If information is missing, clearly state what cannot be answered{followup_instruction}
+CRITICAL INSTRUCTIONS:
+- FIRST: Check if the documents above actually contain information about the SPECIFIC TOPIC in the question
+- If the documents do NOT contain information about the topic asked, respond ONLY with:
+  "I wasn't able to find information about that topic in the available documents. Please try rephrasing your question or ask about a different topic."
+- DO NOT use unrelated documents to construct an answer - this is STRICTLY FORBIDDEN
+- DO NOT speculate, infer, or make up information that is not explicitly stated
+- DO NOT answer based on general knowledge - use ONLY the documents provided
 
-Now provide your answer with inline citations:"""
+CITATION RULES (VERY IMPORTANT):
+- After EACH fact or claim, add an inline citation using the EXACT document name from the DOCUMENTS section above
+- Use this HTML format: (<span><a href="URL">ActualFileName.pdf</a></span>)
+- The URL and filename MUST come from the "Source:" line in the DOCUMENTS section - DO NOT make up URLs or filenames
+- NEVER use placeholder text like "DocumentName.pdf" or "FileName.pdf" - always use the REAL document name
+- Place the citation immediately after the statement, before any punctuation
+
+EXAMPLE (assuming document source is "https://example.com/docs/EN-PO-0301.pdf"):
+✓ CORRECT: "Employees must submit requests via the Decisions tool (<span><a href="https://example.com/docs/EN-PO-0301.pdf">EN-PO-0301.pdf</a></span>)."
+✗ WRONG: "Employees must submit requests (DocumentName.pdf)." - NEVER use placeholder names!
+✗ WRONG: "Employees must submit requests. See EN-PO-0301.pdf for details." - citation must be inline!{followup_instruction}
+
+Now provide your answer with proper citations (or decline if documents are not relevant):"""
 
             logger.info("Starting LLM streaming generation...")
             logger.info(f"[TIMING] Prompt size: {len(prompt)} characters (~{len(prompt.split())} words)")
@@ -1451,19 +1462,22 @@ CRITICAL INSTRUCTIONS:
 - DO NOT use unrelated documents to construct an answer - this is STRICTLY FORBIDDEN
 - DO NOT speculate, infer, or make up information that is not explicitly stated
 - DO NOT answer based on general knowledge - use ONLY the documents provided
-- If you find relevant information:
-  - Provide a direct, helpful answer
-  - Include specific details (section numbers, dates, amounts) when relevant
-  - Add inline citations after EACH claim using this format: (<span><a href="URL">FileName.pdf</a></span>)
-  - Place citations immediately after the relevant statement, before the period
 
-CITATION EXAMPLE:
-✓ CORRECT: "Employees must submit requests via the Decisions tool (<span><a href="https://...">EN-PO-0301.pdf</a></span>)."
-✗ WRONG: "Employees must submit requests via the Decisions tool. For more details, see EN-PO-0301.pdf."
+CITATION RULES (VERY IMPORTANT):
+- After EACH fact or claim, add an inline citation using the EXACT document name from the DOCUMENTS section above
+- Use this HTML format: (<span><a href="URL">ActualFileName.pdf</a></span>)
+- The URL and filename MUST come from the "Source:" line in the DOCUMENTS section - DO NOT make up URLs or filenames
+- NEVER use placeholder text like "DocumentName.pdf" or "FileName.pdf" - always use the REAL document name
+- Place the citation immediately after the statement, before any punctuation
+
+EXAMPLE (assuming document source is "https://example.com/docs/EN-PO-0301.pdf"):
+✓ CORRECT: "Employees must submit requests via the Decisions tool (<span><a href="https://example.com/docs/EN-PO-0301.pdf">EN-PO-0301.pdf</a></span>)."
+✗ WRONG: "Employees must submit requests (DocumentName.pdf)." - NEVER use placeholder names!
+✗ WRONG: "Employees must submit requests. See EN-PO-0301.pdf for details." - citation must be inline!
 
 Remember: It is better to say "I don't have that information" than to provide an answer from unrelated documents.
 
-Now provide your answer (or decline if documents are not relevant):"""
+Now provide your answer with proper citations (or decline if documents are not relevant):"""
 
         logger.debug("Calling Ollama to generate answer...")
 
@@ -1497,7 +1511,7 @@ class QueryRequest(BaseModel):
     prompt: str
     top_k: int = 30  # Get 30 candidates for semantic reranking
     parent_limit: int = 5  # Top 5 parents after semantic reranking
-    temperature: float = 0.3  # LLM temperature for answer generation
+    temperature: float = 0.1  # LLM temperature for answer generation (low for factual accuracy)
     metadata_filter: Optional[Dict[str, Any]] = None
     use_hybrid: bool = True  # Use hybrid search (BM25 + semantic) by default
     bm25_weight: float = 0.2  # Weight for BM25 (0.2 = 80% semantic, 20% BM25)
