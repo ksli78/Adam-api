@@ -388,6 +388,37 @@ class AdvancedRAGPipeline:
                     f"(semantic={chunk.get('semantic_score', 0):.3f})"
                 )
 
+            # Step 2.5: RELEVANCE THRESHOLD CHECK
+            # If the top semantic scores are too low, the documents aren't relevant to the query
+            MIN_RELEVANCE_THRESHOLD = 0.35  # Minimum semantic similarity score
+            top_score = top_semantic_chunks[0].get('semantic_score', 0) if top_semantic_chunks else 0
+            avg_top_3_score = sum(c.get('semantic_score', 0) for c in top_semantic_chunks[:3]) / min(3, len(top_semantic_chunks)) if top_semantic_chunks else 0
+
+            logger.info(f"[RELEVANCE] Top score: {top_score:.3f}, Avg top-3: {avg_top_3_score:.3f}, Threshold: {MIN_RELEVANCE_THRESHOLD}")
+
+            if top_score < MIN_RELEVANCE_THRESHOLD:
+                logger.warning(f"[RELEVANCE] Top semantic score {top_score:.3f} below threshold {MIN_RELEVANCE_THRESHOLD}")
+                return {
+                    "answer": (
+                        "I wasn't able to find information about that topic in the available documents.<br><br>"
+                        "This topic may not be covered in the currently uploaded documents, or it might be described using different terminology.<br><br>"
+                        "<strong>Suggestions:</strong><br>"
+                        "• Try rephrasing your question with different keywords<br>"
+                        "• Check the <a href='https://portal.amentumspacemissions.com/MS/Pages/MSDefaultHomePage.aspx' target='_blank'>Management System</a> "
+                        "for the complete list of policy documents<br>"
+                        "• Contact HR or the relevant department for specific policy questions"
+                    ),
+                    "citations": [],
+                    "confidence": 0.0,
+                    "retrieval_stats": {
+                        "child_chunks_retrieved": len(child_results),
+                        "top_semantic_score": top_score,
+                        "avg_top_3_score": avg_top_3_score,
+                        "threshold": MIN_RELEVANCE_THRESHOLD,
+                        "message": "Retrieved documents not relevant enough to answer query"
+                    }
+                }
+
             # Step 3: Expand top semantic chunks to parents using existing method
             # Extract child IDs from top semantic chunks
             top_child_ids = [chunk['id'] for chunk in top_semantic_chunks]
@@ -620,6 +651,37 @@ class AdvancedRAGPipeline:
             # Take top 5 by semantic similarity
             SEMANTIC_TOP_K = 5
             top_semantic_chunks = child_results_reranked[:SEMANTIC_TOP_K]
+
+            # Step 2.5: RELEVANCE THRESHOLD CHECK
+            # If the top semantic scores are too low, the documents aren't relevant to the query
+            MIN_RELEVANCE_THRESHOLD = 0.35  # Minimum semantic similarity score
+            top_score = top_semantic_chunks[0].get('semantic_score', 0) if top_semantic_chunks else 0
+            avg_top_3_score = sum(c.get('semantic_score', 0) for c in top_semantic_chunks[:3]) / min(3, len(top_semantic_chunks)) if top_semantic_chunks else 0
+
+            logger.info(f"[RELEVANCE] Top score: {top_score:.3f}, Avg top-3: {avg_top_3_score:.3f}, Threshold: {MIN_RELEVANCE_THRESHOLD}")
+
+            if top_score < MIN_RELEVANCE_THRESHOLD:
+                logger.warning(f"[RELEVANCE] Top semantic score {top_score:.3f} below threshold {MIN_RELEVANCE_THRESHOLD}")
+                # Stream a "not relevant" response
+                no_results_msg = (
+                    "I wasn't able to find information about that topic in the available documents.<br><br>"
+                    "This topic may not be covered in the currently uploaded documents, or it might be described using different terminology.<br><br>"
+                    "<strong>Suggestions:</strong><br>"
+                    "• Try rephrasing your question with different keywords<br>"
+                    "• Check the <a href='https://portal.amentumspacemissions.com/MS/Pages/MSDefaultHomePage.aspx' target='_blank'>Management System</a> "
+                    "for the complete list of policy documents<br>"
+                    "• Contact HR or the relevant department for specific policy questions"
+                )
+                import re
+                tokens = re.findall(r'<[^>]+>|[^\s<]+|\s+', no_results_msg)
+                for token in tokens:
+                    yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+                    await asyncio.sleep(0.01)
+                yield f"data: {json.dumps({'type': 'sources', 'citations': []})}\n\n"
+                await asyncio.sleep(0)
+                yield f"data: {json.dumps({'type': 'done', 'stats': {'query_type': 'low_relevance', 'top_score': top_score, 'threshold': MIN_RELEVANCE_THRESHOLD}})}\n\n"
+                await asyncio.sleep(0)
+                return
 
             # Step 3: Expand top semantic chunks to parents
             parent_expand_start = time.time()
@@ -1382,19 +1444,26 @@ QUESTION:
 DOCUMENTS:
 {context}
 
-INSTRUCTIONS:
-- Provide a direct, helpful answer to the question
-- Use information ONLY from the documents above
-- Include specific details (section numbers, dates, amounts) when relevant
-- IMPORTANT: Add inline citations after EACH claim or bullet point using this format: (<span><a href="URL">FileName.pdf</a></span>)
-- Place citations immediately after the relevant statement, before the period
-- If information is missing, clearly state what cannot be answered
+CRITICAL INSTRUCTIONS:
+- FIRST: Check if the documents above actually contain information about the SPECIFIC TOPIC in the question
+- If the documents do NOT contain information about the topic asked, respond ONLY with:
+  "I wasn't able to find information about that topic in the available documents. Please try rephrasing your question or ask about a different topic."
+- DO NOT use unrelated documents to construct an answer - this is STRICTLY FORBIDDEN
+- DO NOT speculate, infer, or make up information that is not explicitly stated
+- DO NOT answer based on general knowledge - use ONLY the documents provided
+- If you find relevant information:
+  - Provide a direct, helpful answer
+  - Include specific details (section numbers, dates, amounts) when relevant
+  - Add inline citations after EACH claim using this format: (<span><a href="URL">FileName.pdf</a></span>)
+  - Place citations immediately after the relevant statement, before the period
 
 CITATION EXAMPLE:
 ✓ CORRECT: "Employees must submit requests via the Decisions tool (<span><a href="https://...">EN-PO-0301.pdf</a></span>)."
 ✗ WRONG: "Employees must submit requests via the Decisions tool. For more details, see EN-PO-0301.pdf."
 
-Now provide your answer with inline citations after each point:"""
+Remember: It is better to say "I don't have that information" than to provide an answer from unrelated documents.
+
+Now provide your answer (or decline if documents are not relevant):"""
 
         logger.debug("Calling Ollama to generate answer...")
 
