@@ -9,7 +9,7 @@ employee_directory:
     server: "CLGDBS02"
     port: 1433
     database: "Corporate"
-    user: "svcasm-adamAi"
+    user: "svasm-adamai"
     password_env: "EMPLOYEE_DB_PASSWORD"  # Set via environment variable
     driver: "ODBC Driver 18 for SQL Server"
     # For SQL Authentication (default). Set use_windows_auth: true for Windows Auth
