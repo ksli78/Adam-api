@@ -770,6 +770,12 @@ class SQLQueryHandler:
             "9. Return ONLY the SQL query on a SINGLE LINE - no explanations, no markdown, no quotes, no line breaks in the SQL",
             "10. Format: SELECT TOP 1000 columns FROM table WHERE conditions",
             "\nCOMMON QUERY PATTERNS:",
+            "- 'Who is [PERSON NAME]' or 'Find [PERSON NAME]' = Search by FirstName AND LastName",
+            "  * CRITICAL: When user asks 'Who is [Name]', provide COMPLETE info about that person!",
+            "  * ALWAYS include: FirstName, LastName, BusinessTitle, HomeDept, Email, WorkPhone, BuildingCode, Room, EmpNo",
+            "  * EmpNo is needed internally for follow-up questions (will be hidden from user)",
+            "  * Example: 'Who is John Smith' → SELECT TOP 1 FirstName, LastName, BusinessTitle, HomeDept, Email, WorkPhone, BuildingCode, Room, EmpNo FROM vwPersonnelAll WHERE FirstName LIKE '%John%' AND LastName LIKE '%Smith%' AND IsTerminated = 0",
+            "  * Example: 'Find Jane Doe' → SELECT TOP 1 FirstName, LastName, BusinessTitle, HomeDept, Email, WorkPhone, BuildingCode, Room, EmpNo FROM vwPersonnelAll WHERE FirstName LIKE '%Jane%' AND LastName LIKE '%Doe%' AND IsTerminated = 0",
             "- 'Who is the [TITLE]' or 'Who is the [TITLE] of [DEPARTMENT/AREA]' = Search BusinessTitle field",
             "  * CRITICAL: This is asking for a person BY THEIR JOB TITLE, not by name!",
             "  * Parse the title words: 'director of enterprise operations' → search BusinessTitle for 'director', 'enterprise', 'operations'",
@@ -778,7 +784,7 @@ class SQLQueryHandler:
             "    - 'Who is the VP of Operations' → WHERE BusinessTitle LIKE '%VP%' AND BusinessTitle LIKE '%Operations%'",
             "    - 'Who is the director of enterprise operations' → WHERE BusinessTitle LIKE '%director%' AND BusinessTitle LIKE '%enterprise%' AND BusinessTitle LIKE '%operations%'",
             "    - 'Who is the Chief Technology Officer' → WHERE BusinessTitle LIKE '%Chief%' AND BusinessTitle LIKE '%Technology%' AND BusinessTitle LIKE '%Officer%'",
-            "  * Select: FirstName, LastName, BusinessTitle, HomeDept, Email, WorkPhone, BuildingCode, Room",
+            "  * Select: FirstName, LastName, BusinessTitle, HomeDept, Email, WorkPhone, BuildingCode, Room, EmpNo",
             "- 'department' or 'list people in/from department' or 'who works in/for DEPT-CODE' = Search HomeDept field (NOT Company!)",
             "  * Department codes like 'ENVR-001', 'ENGR-003' go in HomeDept field",
             "  * Example: WHERE HomeDept LIKE '%ENVR-001%'",
@@ -1105,9 +1111,9 @@ class SQLQueryHandler:
         if not results:
             return ""
 
-        # Get columns from first result, excluding ID fields
+        # Get columns from first result, excluding ID fields and sensitive data
         all_columns = list(results[0].keys())
-        columns = [col for col in all_columns if col.lower() not in ['personnelid', 'empno', 'supervisorno']]
+        columns = [col for col in all_columns if col.lower() not in ['personnelid', 'empno', 'supervisorno', 'annualrate', 'employeeempno', 'managerempno', 'supervisorempno']]
 
         # Start table with styling
         html_parts = ['<table class="adam-ai-table" style="border-collapse: collapse; width: 100%;">']
@@ -1308,12 +1314,17 @@ CRITICAL FORMATTING RULES:
       - Make emails clickable: <a href="mailto:EMAIL">EMAIL</a>
       - Table style: <table style="border-collapse: collapse; width: 100%;">
 5. For names: ALWAYS use FirstName and LastName fields, NEVER use UserName field
-6. NEVER display ID fields (PersonnelId, EmpNo, SupervisorNo) in output - skip them entirely
+6. NEVER display ID fields (PersonnelId, EmpNo, SupervisorNo, EmployeeEmpNo, ManagerEmpNo) - skip them entirely
 7. For dates: Format nicely (e.g., "January 15, 2020")
 8. Skip null/empty fields
 9. NEVER include sensitive fields (AnnualRate)
+10. For "Who is [NAME]" questions, provide COMPLETE info: Full Name, Title, Department, Email, Phone, Building/Room
 
 FORMATTING EXAMPLES:
+
+Question: "Who is John Smith?"
+GOOD: "John Smith is a Senior Engineer in the ENGR-001 department.\\n\\nEmail: <a href=\\"mailto:john.smith@company.com\\">john.smith@company.com</a>\\nPhone: <a href=\\"tel:555-1234\\">555-1234</a>\\nLocation: Building A, Room 101"
+BAD: "John Smith is an employee." ← Too little info! Always include title, dept, email, phone!
 
 Question: "What is John Smith's email?"
 GOOD: "John Smith's email is <a href=\\"mailto:john.smith@company.com\\">john.smith@company.com</a>."
@@ -1527,11 +1538,12 @@ PEOPLE IN THIS RESULT: {names_text}
 TASK 1 - Format the answer:
 - Answer directly - NO preambles like "Here is..." or "The answer is..."
 - DO NOT repeat or echo the user's question
+- For "Who is [NAME]" questions, provide COMPLETE info: Name, Title, Department, Email, Phone, Location
 - Use label:value format with single line breaks (\n)
 - Email addresses: Format as <a href="mailto:EMAIL">EMAIL</a>
 - Phone numbers: Format as <a href="tel:PHONE">PHONE</a>
 - Use FirstName and LastName fields (NEVER UserName)
-- NEVER display ID fields (PersonnelId, EmpNo, SupervisorNo)
+- NEVER display ID fields (PersonnelId, EmpNo, SupervisorNo) or sensitive fields (AnnualRate)
 - Skip null/empty fields
 - For "Who is the [TITLE]" questions, use format: "[Name] is the [Title]." followed by contact info
 
