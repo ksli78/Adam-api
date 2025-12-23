@@ -490,17 +490,25 @@ class AdvancedRAGPipeline:
             citation_pattern = r'\(([^)]+\.pdf)\)'
             matches = re.findall(citation_pattern, answer, re.IGNORECASE)
             for filename in matches:
-                cited_filenames.add(filename)
+                # Normalize to lowercase for comparison
+                cited_filenames.add(filename.lower().strip())
 
             logger.info(f"[CITATIONS] Found {len(cited_filenames)} unique documents cited in answer: {cited_filenames}")
 
             # Filter citations to only include documents that were actually cited
+            # Use case-insensitive matching
             if cited_filenames:
                 citations = [
                     citation for citation in all_citations
-                    if citation['document_title'] in cited_filenames
+                    if citation['document_title'].lower().strip() in cited_filenames
                 ]
                 logger.info(f"[CITATIONS] Filtered from {len(all_citations)} to {len(citations)} citations")
+
+                # If filtering resulted in fewer citations than expected,
+                # it might be due to format differences - use all citations as fallback
+                if len(citations) < len(cited_filenames):
+                    logger.warning(f"[CITATIONS] Mismatch: found {len(cited_filenames)} cited but only {len(citations)} matched. Using all retrieved documents.")
+                    citations = all_citations
             else:
                 # If no citations found in answer (shouldn't happen but fallback), use all
                 logger.warning("[CITATIONS] No citations found in answer, using all retrieved documents")
@@ -808,17 +816,25 @@ Now provide your answer with inline citations:"""
             citation_pattern = r'\(([^)]+\.pdf)\)'
             matches = re.findall(citation_pattern, full_answer, re.IGNORECASE)
             for filename in matches:
-                cited_filenames.add(filename)
+                # Normalize to lowercase for comparison
+                cited_filenames.add(filename.lower().strip())
 
             logger.info(f"[CITATIONS] Found {len(cited_filenames)} unique documents cited in answer: {cited_filenames}")
 
             # Filter citations to only include documents that were actually cited
+            # Use case-insensitive matching
             if cited_filenames:
                 filtered_citations = [
                     citation for citation in all_citations
-                    if citation['document_title'] in cited_filenames
+                    if citation['document_title'].lower().strip() in cited_filenames
                 ]
                 logger.info(f"[CITATIONS] Filtered from {len(all_citations)} to {len(filtered_citations)} citations")
+
+                # If filtering resulted in fewer citations than expected,
+                # it might be due to format differences - use all citations as fallback
+                if len(filtered_citations) < len(cited_filenames):
+                    logger.warning(f"[CITATIONS] Mismatch: found {len(cited_filenames)} cited but only {len(filtered_citations)} matched. Using all retrieved documents.")
+                    filtered_citations = all_citations
             else:
                 # If no citations found in answer (shouldn't happen but fallback), use all
                 logger.warning("[CITATIONS] No citations found in answer, using all retrieved documents")
@@ -1101,17 +1117,25 @@ Now generate follow-up questions:"""
             citation_pattern = r'\(([^)]+\.pdf)\)'
             matches = re.findall(citation_pattern, answer, re.IGNORECASE)
             for filename in matches:
-                cited_filenames.add(filename)
+                # Normalize to lowercase for comparison
+                cited_filenames.add(filename.lower().strip())
 
             logger.info(f"[CITATIONS LLM-SELECT] Found {len(cited_filenames)} unique documents cited: {cited_filenames}")
 
             # Filter citations to only include documents that were actually cited
+            # Use case-insensitive matching
             if cited_filenames:
                 citations = [
                     citation for citation in all_citations
-                    if citation['document_title'] in cited_filenames
+                    if citation['document_title'].lower().strip() in cited_filenames
                 ]
                 logger.info(f"[CITATIONS LLM-SELECT] Filtered from {len(all_citations)} to {len(citations)} citations")
+
+                # If filtering resulted in fewer citations than expected,
+                # it might be due to format differences - use all citations as fallback
+                if len(citations) < len(cited_filenames):
+                    logger.warning(f"[CITATIONS LLM-SELECT] Mismatch: found {len(cited_filenames)} cited but only {len(citations)} matched. Using all selected documents.")
+                    citations = all_citations
             else:
                 # If no citations found in answer (shouldn't happen but fallback), use all
                 logger.warning("[CITATIONS LLM-SELECT] No citations found in answer, using all selected documents")
