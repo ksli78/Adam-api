@@ -220,15 +220,38 @@ async def query_employee_directory(request: SQLQueryRequest):
                 employee_name = None
                 employee_id = None
 
-                # Extract employee info from result
-                if 'FirstName' in result and 'LastName' in result:
+                # Extract employee info from result - prioritize employee-specific columns
+                # This handles JOINs where supervisor info might be in FirstName/LastName
+                if 'EmployeeFirstName' in result and 'EmployeeLastName' in result:
+                    # Aliased employee columns from JOIN queries
+                    first = result.get('EmployeeFirstName', '')
+                    last = result.get('EmployeeLastName', '')
+                    if first or last:
+                        employee_name = f"{first} {last}".strip()
+                    employee_id = result.get('EmployeeEmpNo') or result.get('EmpNo')
+                elif 'FirstName' in result and 'LastName' in result:
+                    # Standard columns - check if this matches the queried name
                     first = result.get('FirstName', '')
                     last = result.get('LastName', '')
                     if first or last:
-                        employee_name = f"{first} {last}".strip()
-
-                if 'EmpNo' in result:
-                    employee_id = result.get('EmpNo')
+                        candidate_name = f"{first} {last}".strip()
+                        # Check if this is likely the person we queried for
+                        query_lower = request.prompt.lower()
+                        name_lower = candidate_name.lower()
+                        # If any part of the name appears in the query, use it
+                        if any(part in query_lower for part in name_lower.split() if len(part) > 2):
+                            employee_name = candidate_name
+                            employee_id = result.get('EmpNo')
+                        else:
+                            # Name doesn't match query - might be a supervisor from JOIN
+                            # Check for Manager/Supervisor columns that might have the queried person
+                            if 'ManagerFirstName' in result or 'SupervisorFirstName' in result:
+                                # This result is about a manager lookup - the queried person is elsewhere
+                                logger.warning(f"[CONTEXT] Result FirstName/LastName ({candidate_name}) doesn't match query, skipping context update")
+                            else:
+                                # No manager columns, use the result as-is
+                                employee_name = candidate_name
+                                employee_id = result.get('EmpNo')
 
                 if employee_name:
                     new_subject = {
@@ -542,15 +565,38 @@ async def query_employee_directory_stream(request: SQLQueryRequest):
                     employee_name = None
                     employee_id = None
 
-                    # Extract employee info from result
-                    if 'FirstName' in result and 'LastName' in result:
+                    # Extract employee info from result - prioritize employee-specific columns
+                    # This handles JOINs where supervisor info might be in FirstName/LastName
+                    if 'EmployeeFirstName' in result and 'EmployeeLastName' in result:
+                        # Aliased employee columns from JOIN queries
+                        first = result.get('EmployeeFirstName', '')
+                        last = result.get('EmployeeLastName', '')
+                        if first or last:
+                            employee_name = f"{first} {last}".strip()
+                        employee_id = result.get('EmployeeEmpNo') or result.get('EmpNo')
+                    elif 'FirstName' in result and 'LastName' in result:
+                        # Standard columns - check if this matches the queried name
                         first = result.get('FirstName', '')
                         last = result.get('LastName', '')
                         if first or last:
-                            employee_name = f"{first} {last}".strip()
-
-                    if 'EmpNo' in result:
-                        employee_id = result.get('EmpNo')
+                            candidate_name = f"{first} {last}".strip()
+                            # Check if this is likely the person we queried for
+                            query_lower = request.prompt.lower()
+                            name_lower = candidate_name.lower()
+                            # If any part of the name appears in the query, use it
+                            if any(part in query_lower for part in name_lower.split() if len(part) > 2):
+                                employee_name = candidate_name
+                                employee_id = result.get('EmpNo')
+                            else:
+                                # Name doesn't match query - might be a supervisor from JOIN
+                                # Check for Manager/Supervisor columns that might have the queried person
+                                if 'ManagerFirstName' in result or 'SupervisorFirstName' in result:
+                                    # This result is about a manager lookup - the queried person is elsewhere
+                                    logger.warning(f"[STREAM CONTEXT] Result FirstName/LastName ({candidate_name}) doesn't match query, skipping context update")
+                                else:
+                                    # No manager columns, use the result as-is
+                                    employee_name = candidate_name
+                                    employee_id = result.get('EmpNo')
 
                     if employee_name:
                         new_subject = {
